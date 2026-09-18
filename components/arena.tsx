@@ -9,6 +9,7 @@ import {
   createPlayer,
   createSharedRace,
   GAME_COPY,
+  nextSpotCell,
 } from "@/lib/arena/games";
 import type {
   AgentDecision,
@@ -22,7 +23,11 @@ import type {
 
 const BASE_SEED = "jevarena-shared-race";
 const MAX_ROUNDS = 30;
-const GAME_ORDER: GameId[] = ["treasure-hunt", "claim-race"];
+const GAME_ORDER: GameId[] = [
+  "spot-race",
+  "treasure-hunt",
+  "claim-race",
+];
 
 interface CompletedDecision {
   playerId: PlayerId;
@@ -163,15 +168,21 @@ function BrandMark() {
 }
 
 function availableCount(state: SharedRaceState) {
-  return state.game === "treasure-hunt"
+  return state.game === "spot-race"
+    ? state.spotClaimedBy
+      ? 0
+      : 1
+    : state.game === "treasure-hunt"
     ? 25 - state.revealed.length
     : state.claimOwners.filter((owner) => owner === null).length;
 }
 
 function raceHasWinner(state: SharedRaceState) {
   return (
-    state.game === "treasure-hunt" &&
-    (state.scores["jev-a"] >= 3 || state.scores["jev-b"] >= 3)
+    (state.game === "spot-race" &&
+      (state.scores["jev-a"] >= 7 || state.scores["jev-b"] >= 7)) ||
+    (state.game === "treasure-hunt" &&
+      (state.scores["jev-a"] >= 3 || state.scores["jev-b"] >= 3))
   );
 }
 
@@ -219,16 +230,22 @@ export function Arena() {
     const cell = Number(targetId.split("-")[1]) - 1;
     state.attempts[playerId] += 1;
     const unavailable =
-      state.game === "treasure-hunt"
+      state.game === "spot-race"
+        ? cell !== state.activeCell || state.spotClaimedBy !== null
+        : state.game === "treasure-hunt"
         ? state.revealed.includes(cell)
         : state.claimOwners[cell] !== null;
 
     if (!Number.isInteger(cell) || cell < 0 || cell >= 25 || unavailable) {
       state.collisionCell = Number.isInteger(cell) ? cell : null;
       const owner =
-        state.game === "claim-race" ? state.claimOwners[cell] : null;
+        state.game === "spot-race"
+          ? state.spotClaimedBy
+          : state.game === "claim-race"
+            ? state.claimOwners[cell]
+            : null;
       player.pendingOutcome = owner
-        ? `[${cell + 1}] already claimed by ${
+        ? `[${cell + 1}] already scored by ${
             owner === "jev-a" ? "Jev" : "parallel Jev"
           }`
         : `[${cell + 1}] already revealed · claim lost`;
@@ -237,7 +254,11 @@ export function Arena() {
 
     state.lastCell = cell;
     state.collisionCell = null;
-    if (state.game === "treasure-hunt") {
+    if (state.game === "spot-race") {
+      state.spotClaimedBy = playerId;
+      state.scores[playerId] += 1;
+      player.pendingOutcome = `[${cell + 1}] LIT CELL · +1 point`;
+    } else if (state.game === "treasure-hunt") {
       state.revealed.push(cell);
       if (state.treasures.includes(cell)) {
         state.treasureOwners[cell] = playerId;
@@ -332,6 +353,18 @@ export function Arena() {
 
       state.round += 1;
       publish(currentPlayers, state);
+      if (state.game === "spot-race" && !raceHasWinner(state)) {
+        await sleep(260, signal);
+        state.activeCell = nextSpotCell(
+          state.seed,
+          state.round,
+          state.activeCell,
+        );
+        state.spotClaimedBy = null;
+        state.lastCell = null;
+        state.collisionCell = null;
+        publish(currentPlayers, state);
+      }
     },
     [addTrace, publish],
   );
@@ -385,7 +418,9 @@ export function Arena() {
         return {
           winner: winner.id,
           label:
-            state.game === "treasure-hunt"
+            state.game === "spot-race"
+              ? `${winner.name} wins Spot Race`
+              : state.game === "treasure-hunt"
               ? `${winner.name} found the majority`
               : `${winner.name} claimed the grid`,
           detail: `${state.scores[first.id]}–${state.scores[second.id]} · first claim wins.`,
@@ -533,7 +568,11 @@ export function Arena() {
   );
 
   const scoreLabel =
-    selectedGame === "treasure-hunt" ? "TREASURES" : "CLAIMS";
+    selectedGame === "spot-race"
+      ? "POINTS"
+      : selectedGame === "treasure-hunt"
+        ? "TREASURES"
+        : "CLAIMS";
 
   return (
     <main className={view === "fight" ? "site fight-site" : "site"}>
@@ -634,11 +673,6 @@ export function Arena() {
               </button>
             </div>
           )}
-
-          <p className="race-order-line">
-            Parallel decisions · fastest response gets the lock · exact ties
-            alternate priority
-          </p>
 
           <div className="shared-race-layout">
             <AgentPane

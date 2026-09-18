@@ -108,6 +108,12 @@ export function AgentPane({
             <span>LATENCY</span>
             <strong>{decision ? `${decision.latencyMs}ms` : "—"}</strong>
           </div>
+          <div>
+            <span>CONFIDENCE</span>
+            <strong>
+              {decision ? `${Math.round(decision.confidence * 100)}%` : "—"}
+            </strong>
+          </div>
         </div>
 
         <div className="probability-grid">

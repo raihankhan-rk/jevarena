@@ -1628,17 +1628,20 @@ select:focus-visible {
 
 .shared-race-layout {
   display: grid;
-  grid-template-columns: minmax(245px, 0.72fr) minmax(430px, 1.4fr) minmax(245px, 0.72fr);
+  grid-template-columns:
+    minmax(330px, 0.92fr) minmax(480px, 1.16fr)
+    minmax(330px, 0.92fr);
   align-items: start;
-  gap: 14px;
+  gap: 18px;
 }
 
 .race-agent {
-  margin-top: 42px;
+  margin-top: 18px;
 }
 
 .race-agent .agent-pane-header {
-  padding-inline: 14px;
+  min-height: 104px;
+  padding-inline: 18px;
 }
 
 .race-agent .agent-name-row {
@@ -1646,17 +1649,47 @@ select:focus-visible {
 }
 
 .race-agent .agent-name-row h2 {
-  max-width: 170px;
-  font-size: 14px;
+  max-width: 230px;
+  font-size: 19px;
+  line-height: 1.1;
   white-space: normal;
 }
 
 .race-agent .agent-status {
-  margin-top: 3px;
+  margin-top: 7px;
+  font-size: 9px;
+}
+
+.race-agent .agent-avatar {
+  width: 52px;
+  height: 52px;
+  font-size: 23px;
+}
+
+.race-agent .agent-score strong {
+  font-size: 42px;
+}
+
+.race-agent .agent-score span {
+  font-size: 9px;
 }
 
 .race-agent .step-ticker {
   grid-template-columns: 0.65fr 1fr;
+}
+
+.race-agent .step-ticker > div {
+  min-height: 64px;
+  padding: 14px 16px;
+}
+
+.race-agent .step-ticker span {
+  font-size: 9px;
+}
+
+.race-agent .step-ticker strong {
+  margin-top: 7px;
+  font-size: 14px;
 }
 
 .race-agent .step-ticker > div:nth-child(2n) {
@@ -1672,12 +1705,45 @@ select:focus-visible {
 }
 
 .race-agent .probability-group {
+  padding: 17px 16px;
   border-right: 0;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .race-agent .probability-group:last-child {
   border-bottom: 0;
+}
+
+.race-agent .probability-heading {
+  margin-bottom: 13px;
+  font-size: 9px;
+}
+
+.race-agent .probability-row + .probability-row {
+  margin-top: 12px;
+}
+
+.race-agent .probability-label {
+  margin-bottom: 7px;
+  font-size: 10px;
+}
+
+.race-agent .probability-track {
+  height: 7px;
+}
+
+.race-agent .console-footer {
+  min-height: 54px;
+  padding: 12px 16px;
+}
+
+.race-agent .source-chip {
+  padding: 5px 7px;
+  font-size: 8px;
+}
+
+.race-agent .console-footer p {
+  font-size: 10px;
 }
 
 .shared-browser-shell {
@@ -1703,6 +1769,12 @@ select:focus-visible {
   background:
     radial-gradient(circle at 82% 20%, rgba(237, 106, 81, 0.16), transparent 23%),
     linear-gradient(145deg, #f2e8d6, #d8e8df);
+}
+
+.shared-spot-race {
+  background:
+    radial-gradient(circle at 50% 45%, rgba(239, 180, 72, 0.24), transparent 30%),
+    linear-gradient(145deg, #e3eee0, #b2d2bd);
 }
 
 .shared-board-topline {
@@ -1798,6 +1870,34 @@ select:focus-visible {
   outline-offset: 2px;
 }
 
+.shared-spot-race .shared-cell {
+  opacity: 0.56;
+  filter: saturate(0.55);
+}
+
+.shared-spot-race .shared-cell.is-lit,
+.shared-spot-race .shared-cell.is-revealed {
+  opacity: 1;
+  filter: none;
+}
+
+.shared-cell.is-lit {
+  z-index: 2;
+  color: var(--ink);
+  background: var(--gold);
+  box-shadow:
+    0 6px 0 #b77e1f,
+    0 0 0 7px rgba(239, 180, 72, 0.18),
+    0 0 30px rgba(239, 180, 72, 0.56);
+  animation: lit-pulse 650ms infinite alternate ease-in-out;
+}
+
+@keyframes lit-pulse {
+  to {
+    transform: translateY(-3px) scale(1.04);
+  }
+}
+
 .shared-cell.is-collision {
   animation: collision-shake 260ms ease;
 }
@@ -1879,10 +1979,23 @@ select:focus-visible {
   letter-spacing: 0.08em;
 }
 
-@media (max-width: 1050px) {
+.board-one-liner {
+  width: min(92%, 620px);
+  margin: 20px auto 2px;
+  color: var(--ink);
+  font-size: clamp(15px, 1.5vw, 20px);
+  font-weight: 760;
+  letter-spacing: -0.025em;
+  line-height: 1.3;
+  text-align: center;
+}
+
+@media (max-width: 1180px) {
   .shared-race-layout {
-    grid-template-columns: minmax(210px, 0.7fr) minmax(390px, 1.3fr) minmax(210px, 0.7fr);
-    gap: 9px;
+    grid-template-columns:
+      minmax(285px, 0.9fr) minmax(410px, 1.1fr)
+      minmax(285px, 0.9fr);
+    gap: 10px;
   }
 
   .race-agent .agent-score {
@@ -1890,13 +2003,11 @@ select:focus-visible {
   }
 
   .race-agent .agent-avatar {
-    width: 38px;
-    height: 38px;
-    margin-right: 8px;
+    margin-right: 10px;
   }
 }
 
-@media (max-width: 860px) {
+@media (max-width: 980px) {
   .shared-race-layout {
     grid-template-columns: 1fr;
     gap: 14px;
@@ -1941,10 +2052,6 @@ select:focus-visible {
 @media (max-width: 560px) {
   .shared-fight-view {
     width: calc(100% - 18px);
-  }
-
-  .race-order-line {
-    line-height: 1.5;
   }
 
   .shared-fixture {

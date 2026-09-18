@@ -15,15 +15,22 @@ export const GAME_COPY: Record<
     rule: string;
   }
 > = {
+  "spot-race": {
+    label: "Spot Race",
+    eyebrow: "Reflex race",
+    rule: "A cell lights up. First Jev to click it scores.",
+  },
   "treasure-hunt": {
     label: "Treasure Hunt",
     eyebrow: "Hidden race",
-    rule: "One shared grid · first to 3 of 5 treasures wins",
+    rule:
+      "Hidden treasures on one grid. First to click a treasure owns it. First to 3 wins.",
   },
   "claim-race": {
-    label: "Claim Race",
+    label: "Claim the Grid",
     eyebrow: "Grid race",
-    rule: "One shared grid · most cells after every claim wins",
+    rule:
+      "Empty squares. First Jev to click a square owns it. Most squares wins.",
   },
 };
 
@@ -79,10 +86,22 @@ export function createSharedRace(game: GameId, seed: string): SharedRaceState {
     attempts: { "jev-a": 0, "jev-b": 0 },
     lastCell: null,
     collisionCell: null,
+    activeCell: nextSpotCell(seed, 0, -1),
+    spotClaimedBy: null,
   };
 }
 
+export function nextSpotCell(seed: string, round: number, previous: number) {
+  const random = mulberry32(hashSeed(`${seed}:spot:${round}`));
+  let next = Math.floor(random() * 25);
+  if (next === previous) next = (next + 1 + (round % 23)) % 25;
+  return next;
+}
+
 export function availableCellIndices(state: SharedRaceState) {
+  if (state.game === "spot-race") {
+    return state.spotClaimedBy ? [] : [state.activeCell];
+  }
   if (state.game === "treasure-hunt") {
     const revealed = new Set(state.revealed);
     return Array.from({ length: 25 }, (_, index) => index).filter(
@@ -101,15 +120,23 @@ export function raceElements(state: SharedRaceState) {
       index: index + 1,
       role: "button",
       label:
-        state.game === "treasure-hunt"
+        state.game === "spot-race"
+          ? `LIT shared grid cell ${index + 1} — click now to score`
+          : state.game === "treasure-hunt"
           ? `Unrevealed shared grid cell ${index + 1}`
           : `Unclaimed shared grid cell ${index + 1}, worth one point`,
-      state: state.game === "treasure-hunt" ? "hidden" : "available",
+      state:
+        state.game === "spot-race"
+          ? "lit"
+          : state.game === "treasure-hunt"
+            ? "hidden"
+            : "available",
     }),
   );
 }
 
 function claimedCells(state: SharedRaceState, players: PlayerRun[]) {
+  if (state.game === "spot-race") return {};
   if (state.game === "treasure-hunt") {
     return Object.fromEntries(
       Object.entries(state.treasureOwners).map(([cell, owner]) => [
@@ -144,7 +171,14 @@ export function buildAgentRequest(
     state.scores[second.id]
   }`;
   const visibleText =
-    state.game === "treasure-hunt"
+    state.game === "spot-race"
+      ? [
+          "Shared Spot Race board.",
+          `Cell ${state.activeCell + 1} is lit and is the only scoring target.`,
+          `${scoreText} points.`,
+          "The first Jev to click the lit cell scores one point.",
+        ].join(" ")
+      : state.game === "treasure-hunt"
       ? [
           "Shared Treasure Hunt board.",
           `${state.revealed.length} of 25 cells are revealed.`,
@@ -166,7 +200,9 @@ export function buildAgentRequest(
     agent: player.name,
     game: state.game,
     goal:
-      state.game === "treasure-hunt"
+      state.game === "spot-race"
+        ? "Click the single LIT shared cell immediately. Only the lit cell scores; first click wins the point."
+        : state.game === "treasure-hunt"
         ? "Race the other Jev to find a majority: click one unrevealed shared cell. Keep exploring; hidden cells are actionable."
         : "Claim one currently unclaimed shared cell before the other Jev. Every offered cell is worth one point.",
     page: {
@@ -186,7 +222,9 @@ export function buildAgentRequest(
       treasuresFound:
         state.game === "treasure-hunt" ? state.scores[player.id] : undefined,
       goalsComplete:
-        state.game === "treasure-hunt"
+        state.game === "spot-race"
+          ? state.scores[player.id] >= 7
+          : state.game === "treasure-hunt"
           ? state.scores[player.id] >= 3
           : elements.length === 0,
     },

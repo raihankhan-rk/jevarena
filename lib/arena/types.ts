@@ -1,4 +1,4 @@
-export type GameId = "treasure-hunt" | "claim-race";
+export type GameId = "spot-race" | "treasure-hunt" | "claim-race";
 export type PlayerId = "jev-a" | "jev-b";
 export type PlayerName = "Jev" | "Jev in parallel universe";
 export type AgentOperation = "CLICK" | "BLOCKED";
@@ -8,7 +8,7 @@ export interface ElementObservation {
   index: number;
   role: "button";
   label: string;
-  state: "hidden" | "available";
+  state: "lit" | "hidden" | "available";
 }
 
 export interface AgentMemory {
@@ -85,6 +85,8 @@ export interface SharedRaceState {
   attempts: Record<PlayerId, number>;
   lastCell: number | null;
   collisionCell: number | null;
+  activeCell: number;
+  spotClaimedBy: PlayerId | null;
 }
 
 export interface MatchResult {

@@ -15,6 +15,12 @@ clickable elements in the same indexed DOM.
 
 ## Shared races
 
+### Spot Race
+
+A single cell lights up each round. Both Jevs receive that same indexed target;
+the first serialized click scores one point. A different cell lights next.
+First to seven wins.
+
 ### Treasure Hunt
 
 Five treasures are hidden in one shared 5×5 grid. Both Jevs receive the same
@@ -23,7 +29,7 @@ parallel, then clicks acquire a single JavaScript mutation lock in response
 completion order. A treasure belongs to the Jev whose click reveals it. The
 first to claim three of five wins.
 
-### Claim Race
+### Claim the Grid
 
 Every cell in one shared 5×5 grid is worth one point. Both Jevs race for
 unclaimed cell IDs. The board runs until every cell is owned (or the bounded
