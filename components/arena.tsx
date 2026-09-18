@@ -3,37 +3,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { AgentPane } from "@/components/agent-pane";
-import { SharedGameFixture } from "@/components/game-fixtures";
-import {
-  buildAgentRequest,
-  createPlayer,
-  createSharedRace,
-  GAME_COPY,
-  nextSpotCell,
-} from "@/lib/arena/games";
+import { buildAgentRequest, createPlayer } from "@/lib/arena/games";
 import type {
   AgentDecision,
-  GameId,
+  Direction,
   MatchResult,
   PlayerId,
   PlayerRun,
-  SharedRaceState,
+  SnakeSnapshot,
   StepTrace,
 } from "@/lib/arena/types";
 
-const BASE_SEED = "jevarena-shared-race";
-const MAX_ROUNDS = 30;
-const GAME_ORDER: GameId[] = [
-  "spot-race",
-  "treasure-hunt",
-  "claim-race",
-];
-
-interface CompletedDecision {
-  playerId: PlayerId;
-  decision: AgentDecision;
-  completedAt: number;
-}
+const MATCH_DURATION_MS = 60_000;
+const DECISION_INTERVAL_MS = 360;
 
 function sleep(ms: number, signal: AbortSignal) {
   return new Promise<void>((resolve, reject) => {
@@ -69,27 +51,11 @@ function clonePlayer(player: PlayerRun): PlayerRun {
   };
 }
 
-function clonePlayers(players: PlayerRun[]) {
-  return players.map(clonePlayer) as [PlayerRun, PlayerRun];
-}
-
-function cloneRace(state: SharedRaceState): SharedRaceState {
-  return {
-    ...state,
-    treasures: [...state.treasures],
-    revealed: [...state.revealed],
-    treasureOwners: { ...state.treasureOwners },
-    claimOwners: [...state.claimOwners],
-    scores: { ...state.scores },
-    attempts: { ...state.attempts },
-  };
-}
-
 function blockedDecision(reason: string): AgentDecision {
   return {
     operation: "BLOCKED",
     targetId: null,
-    operationProbabilities: { CLICK: 0, BLOCKED: 1 },
+    operationProbabilities: { CLICK: 0, WAIT: 0, BLOCKED: 1 },
     targetProbabilities: {},
     confidence: 1,
     targetConfidence: null,
@@ -101,37 +67,28 @@ function blockedDecision(reason: string): AgentDecision {
 }
 
 async function requestDecision(
-  state: SharedRaceState,
+  snapshot: SnakeSnapshot,
   player: PlayerRun,
-  players: PlayerRun[],
   signal: AbortSignal,
-): Promise<CompletedDecision> {
+) {
   const startedAt = performance.now();
   try {
     const response = await fetch("/api/agent/step", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(buildAgentRequest(state, player, players)),
+      body: JSON.stringify(buildAgentRequest(snapshot, player)),
       cache: "no-store",
       signal,
     });
-    const decision = response.ok
-      ? ((await response.json()) as AgentDecision)
-      : blockedDecision("Invalid shared-board snapshot; player BLOCKED.");
-    return {
-      playerId: player.id,
-      decision,
-      completedAt: performance.now(),
-    };
+    if (!response.ok) {
+      return blockedDecision("Invalid Snake snapshot; Jev is BLOCKED.");
+    }
+    return (await response.json()) as AgentDecision;
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") throw error;
     return {
-      playerId: player.id,
-      decision: {
-        ...blockedDecision("Agent request failed; player BLOCKED."),
-        latencyMs: Math.round(performance.now() - startedAt),
-      },
-      completedAt: performance.now(),
+      ...blockedDecision("Jev request failed; this browser is BLOCKED."),
+      latencyMs: Math.round(performance.now() - startedAt),
     };
   }
 }
@@ -167,415 +124,295 @@ function BrandMark() {
   );
 }
 
-function availableCount(state: SharedRaceState) {
-  return state.game === "spot-race"
-    ? state.spotClaimedBy
-      ? 0
-      : 1
-    : state.game === "treasure-hunt"
-    ? 25 - state.revealed.length
-    : state.claimOwners.filter((owner) => owner === null).length;
-}
-
-function raceHasWinner(state: SharedRaceState) {
-  return (
-    (state.game === "spot-race" &&
-      (state.scores["jev-a"] >= 7 || state.scores["jev-b"] >= 7)) ||
-    (state.game === "treasure-hunt" &&
-      (state.scores["jev-a"] >= 3 || state.scores["jev-b"] >= 3))
-  );
-}
-
 export function Arena() {
-  const [selectedGame, setSelectedGame] =
-    useState<GameId>("spot-race");
   const [view, setView] = useState<"landing" | "fight">("landing");
   const [phase, setPhase] = useState<
-    "idle" | "countdown" | "running" | "finished"
+    "idle" | "loading" | "countdown" | "running" | "finished"
   >("idle");
   const [countdown, setCountdown] = useState(3);
-  const [timeLeft, setTimeLeft] = useState(0);
+  const [timeLeft, setTimeLeft] = useState(60);
   const [result, setResult] = useState<MatchResult | null>(null);
+  const [matchId, setMatchId] = useState(0);
   const [players, setPlayers] = useState<[PlayerRun, PlayerRun]>(() => [
     createPlayer("jev-a"),
     createPlayer("jev-b"),
   ]);
-  const [race, setRace] = useState<SharedRaceState>(() =>
-    createSharedRace("spot-race", `${BASE_SEED}:0`),
-  );
 
+  const playersRef = useRef<PlayerRun[]>(players);
+  const snapshotsRef = useRef<Partial<Record<PlayerId, SnakeSnapshot>>>({});
+  const readyRef = useRef(new Set<PlayerId>());
+  const pendingRef = useRef<Record<PlayerId, boolean>>({
+    "jev-a": false,
+    "jev-b": false,
+  });
+  const lastDecisionRef = useRef<Record<PlayerId, number>>({
+    "jev-a": 0,
+    "jev-b": 0,
+  });
+  const runningRef = useRef(false);
+  const countdownStartedRef = useRef(false);
+  const finishedRef = useRef(false);
   const controllerRef = useRef<AbortController | null>(null);
-  const playersRef = useRef<PlayerRun[] | null>(null);
-  const raceRef = useRef<SharedRaceState | null>(null);
-  const executingPlayerRef = useRef<PlayerId | null>(null);
-  const matchNumberRef = useRef(0);
+  const clockRef = useRef<number | null>(null);
 
-  const publish = useCallback(
-    (nextPlayers: PlayerRun[], nextRace: SharedRaceState) => {
-      setPlayers(clonePlayers(nextPlayers));
-      setRace(cloneRace(nextRace));
-    },
-    [],
-  );
-
-  const claimCell = useCallback((targetId: string) => {
-    const state = raceRef.current;
-    const currentPlayers = playersRef.current;
-    const playerId = executingPlayerRef.current;
-    const player = currentPlayers?.find(
-      (candidate) => candidate.id === playerId,
+  const publish = useCallback(() => {
+    setPlayers(
+      playersRef.current.map(clonePlayer) as [PlayerRun, PlayerRun],
     );
-    if (!state || !player || !playerId) return;
-
-    const cell = Number(targetId.split("-")[1]) - 1;
-    state.attempts[playerId] += 1;
-    const unavailable =
-      state.game === "spot-race"
-        ? cell !== state.activeCell || state.spotClaimedBy !== null
-        : state.game === "treasure-hunt"
-        ? state.revealed.includes(cell)
-        : state.claimOwners[cell] !== null;
-
-    if (!Number.isInteger(cell) || cell < 0 || cell >= 25 || unavailable) {
-      state.collisionCell = Number.isInteger(cell) ? cell : null;
-      const owner =
-        state.game === "spot-race"
-          ? state.spotClaimedBy
-          : state.game === "claim-race"
-            ? state.claimOwners[cell]
-            : null;
-      player.pendingOutcome = owner
-        ? `[${cell + 1}] already scored by ${
-            owner === "jev-a" ? "Jev" : "parallel Jev"
-          }`
-        : `[${cell + 1}] already revealed · claim lost`;
-      return;
-    }
-
-    state.lastCell = cell;
-    state.collisionCell = null;
-    if (state.game === "spot-race") {
-      state.spotClaimedBy = playerId;
-      state.scores[playerId] += 1;
-      player.pendingOutcome = `[${cell + 1}] LIT CELL · +1 point`;
-    } else if (state.game === "treasure-hunt") {
-      state.revealed.push(cell);
-      if (state.treasures.includes(cell)) {
-        state.treasureOwners[cell] = playerId;
-        state.scores[playerId] += 1;
-        player.pendingOutcome = `[${cell + 1}] TREASURE · claim won`;
-      } else {
-        player.pendingOutcome = `[${cell + 1}] empty · revealed first`;
-      }
-    } else {
-      state.claimOwners[cell] = playerId;
-      state.scores[playerId] += 1;
-      player.pendingOutcome = `[${cell + 1}] claimed · +1`;
-    }
   }, []);
 
-  const addTrace = useCallback(
-    (player: PlayerRun, decision: AgentDecision) => {
-      const trace: StepTrace = {
-        step: player.history.length + 1,
-        operation: decision.operation,
-        targetId: decision.targetId,
-        outcome: player.pendingOutcome || "No claim executed",
-        operationProbabilities: decision.operationProbabilities,
-        targetProbabilities: decision.targetProbabilities,
-        confidence: decision.confidence,
-        targetConfidence: decision.targetConfidence,
-        latencyMs: decision.latencyMs,
-        model: decision.model,
-        source: decision.source,
-      };
-      player.history.push(trace);
+  const postToFrame = useCallback(
+    (agentId: PlayerId, message: Record<string, unknown>) => {
+      const frame = document.getElementById(
+        `snake-frame-${agentId}`,
+      ) as HTMLIFrameElement | null;
+      frame?.contentWindow?.postMessage(message, window.location.origin);
     },
     [],
   );
 
-  const applySerially = useCallback(
-    async (
-      completed: CompletedDecision[],
-      currentPlayers: PlayerRun[],
-      state: SharedRaceState,
-      signal: AbortSignal,
-      matchNumber: number,
-    ) => {
-      completed.forEach(({ playerId, decision }) => {
-        const player = currentPlayers.find(
-          (candidate) => candidate.id === playerId,
-        );
-        if (!player) return;
-        player.latestDecision = decision;
-        player.pendingOutcome = "";
-        player.status =
-          decision.operation === "BLOCKED" ? "blocked" : "acting";
-      });
-      publish(currentPlayers, state);
-      await sleep(90, signal);
-
-      const preferredFirst: PlayerId =
-        (state.round + matchNumber) % 2 === 0 ? "jev-a" : "jev-b";
-      completed.sort((first, second) => {
-        const delta = first.completedAt - second.completedAt;
-        if (Math.abs(delta) > 4) return delta;
-        return first.playerId === preferredFirst ? -1 : 1;
-      });
-
-      for (const { playerId, decision } of completed) {
-        const player = currentPlayers.find(
-          (candidate) => candidate.id === playerId,
-        );
-        if (!player) continue;
-
-        if (raceHasWinner(state)) {
-          player.pendingOutcome = "Race ended before this claim acquired the lock";
-        } else if (decision.operation === "CLICK" && decision.targetId) {
-          executingPlayerRef.current = playerId;
-          const element = document.getElementById(
-            `shared-${decision.targetId}`,
-          ) as HTMLButtonElement | null;
-          if (element) {
-            element.click();
-          } else {
-            player.pendingOutcome = `${decision.targetId} left the shared action space`;
-          }
-          executingPlayerRef.current = null;
-        } else {
-          player.pendingOutcome =
-            decision.blockedReason ?? "No shared-board claim available";
-        }
-
-        addTrace(player, decision);
-        if (decision.operation !== "BLOCKED") player.status = "ready";
-      }
-
-      state.round += 1;
-      publish(currentPlayers, state);
-      if (state.game === "spot-race" && !raceHasWinner(state)) {
-        await sleep(260, signal);
-        state.activeCell = nextSpotCell(
-          state.seed,
-          state.round,
-          state.activeCell,
-        );
-        state.spotClaimedBy = null;
-        state.lastCell = null;
-        state.collisionCell = null;
-        publish(currentPlayers, state);
-      }
-    },
-    [addTrace, publish],
-  );
-
-  const getParallelDecisions = useCallback(
-    async (
-      currentPlayers: PlayerRun[],
-      state: SharedRaceState,
-      signal: AbortSignal,
-    ) => {
-      currentPlayers.forEach((player) => {
-        if (player.status !== "blocked") player.status = "thinking";
-      });
-      publish(currentPlayers, state);
-      return Promise.all(
-        currentPlayers.map((player) =>
-          player.status === "blocked"
-            ? Promise.resolve({
-                playerId: player.id,
-                decision: blockedDecision("Player already BLOCKED."),
-                completedAt: Number.POSITIVE_INFINITY,
-              })
-            : requestDecision(state, player, currentPlayers, signal),
-        ),
-      );
-    },
-    [publish],
-  );
-
-  const resolveResult = useCallback(
-    (state: SharedRaceState, currentPlayers: PlayerRun[]): MatchResult => {
-      const [first, second] = currentPlayers;
-      if (first.status === "blocked" && second.status === "blocked") {
-        return {
-          winner: "draw",
-          label: "Double BLOCKED",
-          detail: "Neither Jev returned another valid claim.",
-        };
-      }
-      if (first.status === "blocked" || second.status === "blocked") {
-        const winner = first.status === "blocked" ? second : first;
-        return {
-          winner: winner.id,
-          label: `${winner.name} wins`,
-          detail: "Opponent BLOCKED during the shared race.",
-        };
-      }
-      if (state.scores[first.id] !== state.scores[second.id]) {
-        const winner =
-          state.scores[first.id] > state.scores[second.id] ? first : second;
-        return {
-          winner: winner.id,
-          label:
-            state.game === "spot-race"
-              ? `${winner.name} wins Spot Race`
-              : state.game === "treasure-hunt"
-              ? `${winner.name} found the majority`
-              : `${winner.name} claimed the grid`,
-          detail: `${state.scores[first.id]}–${state.scores[second.id]} · first claim wins.`,
-        };
-      }
-      return {
-        winner: "draw",
-        label: "Dead heat",
-        detail: `${state.scores[first.id]} claims each after ${state.round} rounds.`,
-      };
-    },
-    [],
-  );
+  const stopFrames = useCallback(() => {
+    postToFrame("jev-a", { type: "snake-stop" });
+    postToFrame("jev-b", { type: "snake-stop" });
+  }, [postToFrame]);
 
   const finishMatch = useCallback(
-    (
-      currentPlayers: PlayerRun[],
-      state: SharedRaceState,
-      matchResult: MatchResult,
-    ) => {
-      currentPlayers.forEach((player) => {
+    (reason: "time" | "crash" | "blocked", stoppedAgent?: PlayerId) => {
+      if (finishedRef.current) return;
+      finishedRef.current = true;
+      runningRef.current = false;
+      controllerRef.current?.abort();
+      if (clockRef.current) window.clearInterval(clockRef.current);
+      stopFrames();
+
+      const [first, second] = playersRef.current;
+      let winner: PlayerRun | null = null;
+      if (stoppedAgent) {
+        winner = stoppedAgent === "jev-a" ? second : first;
+      } else if (first.score !== second.score) {
+        winner = first.score > second.score ? first : second;
+      }
+
+      const matchResult: MatchResult = winner
+        ? {
+            winner: winner.id,
+            label: `${winner.name} wins`,
+            detail:
+              reason === "crash"
+                ? `${stoppedAgent === "jev-a" ? first.name : second.name} crashed · ${first.score}–${second.score}`
+                : reason === "blocked"
+                  ? `Opponent BLOCKED · ${first.score}–${second.score}`
+                  : `Time · ${first.score}–${second.score}`,
+          }
+        : {
+            winner: "draw",
+            label: "Scores tied",
+            detail: `Time · ${first.score}–${second.score}`,
+          };
+
+      playersRef.current.forEach((player) => {
         if (player.status !== "blocked") player.status = "done";
       });
-      publish(currentPlayers, state);
+      publish();
       setResult(matchResult);
       setPhase("finished");
       setTimeLeft(0);
     },
-    [publish],
+    [publish, stopFrames],
   );
 
-  const runRace = useCallback(
-    async (
-      currentPlayers: PlayerRun[],
-      state: SharedRaceState,
-      signal: AbortSignal,
-      matchNumber: number,
-      deadline: number,
-    ) => {
-      for (let round = 0; round < MAX_ROUNDS; round += 1) {
-        if (
-          signal.aborted ||
-          Date.now() >= deadline ||
-          raceHasWinner(state) ||
-          availableCount(state) === 0 ||
-          currentPlayers.some((player) => player.status === "blocked")
-        ) {
-          break;
-        }
-        const completed = await getParallelDecisions(
-          currentPlayers,
-          state,
-          signal,
-        );
-        await applySerially(
-          completed,
-          currentPlayers,
-          state,
-          signal,
-          matchNumber,
-        );
-        await sleep(150, signal);
+  const runDecision = useCallback(
+    async (agentId: PlayerId, snapshot: SnakeSnapshot) => {
+      if (
+        !runningRef.current ||
+        pendingRef.current[agentId] ||
+        !snapshot.alive
+      ) {
+        return;
       }
-      finishMatch(currentPlayers, state, resolveResult(state, currentPlayers));
-    },
-    [
-      applySerially,
-      finishMatch,
-      getParallelDecisions,
-      resolveResult,
-    ],
-  );
-
-  const startFight = useCallback(
-    async (game: GameId) => {
-      controllerRef.current?.abort();
-      const controller = new AbortController();
-      controllerRef.current = controller;
-      matchNumberRef.current += 1;
-      const matchNumber = matchNumberRef.current;
-      const nextPlayers = [createPlayer("jev-a"), createPlayer("jev-b")];
-      const nextRace = createSharedRace(
-        game,
-        `${BASE_SEED}:${matchNumber}`,
+      const now = performance.now();
+      if (now - lastDecisionRef.current[agentId] < DECISION_INTERVAL_MS) return;
+      lastDecisionRef.current[agentId] = now;
+      pendingRef.current[agentId] = true;
+      const player = playersRef.current.find(
+        (candidate) => candidate.id === agentId,
       );
-      playersRef.current = nextPlayers;
-      raceRef.current = nextRace;
-      setSelectedGame(game);
-      setView("fight");
-      setResult(null);
-      setPhase("countdown");
-      publish(nextPlayers, nextRace);
+      const signal = controllerRef.current?.signal;
+      if (!player || !signal) return;
 
+      player.status = "thinking";
+      publish();
       try {
-        for (let count = 3; count >= 1; count -= 1) {
-          setCountdown(count);
-          await sleep(550, controller.signal);
+        const decision = await requestDecision(snapshot, player, signal);
+        if (!runningRef.current) return;
+        player.latestDecision = decision;
+        player.status =
+          decision.operation === "BLOCKED" ? "blocked" : "acting";
+        const direction = decision.targetId?.replace(
+          "direction-",
+          "",
+        ) as Direction | undefined;
+        let outcome = "WAIT · current direction continues";
+
+        if (decision.operation === "CLICK" && direction) {
+          postToFrame(agentId, {
+            type: "snake-direction",
+            direction,
+          });
+          outcome = `Clicked ${direction.toUpperCase()} in ${decision.latencyMs}ms`;
+        } else if (decision.operation === "BLOCKED") {
+          outcome = decision.blockedReason ?? "No safe move";
         }
-        setPhase("running");
-        const duration = 50_000;
-        const deadline = Date.now() + duration;
-        setTimeLeft(duration / 1_000);
-        const clock = window.setInterval(() => {
-          setTimeLeft(Math.max(0, Math.ceil((deadline - Date.now()) / 1_000)));
-        }, 250);
-        try {
-          await runRace(
-            nextPlayers,
-            nextRace,
-            controller.signal,
-            matchNumber,
-            deadline,
-          );
-        } finally {
-          window.clearInterval(clock);
+
+        const trace: StepTrace = {
+          step: player.history.length + 1,
+          operation: decision.operation,
+          targetId: decision.targetId,
+          outcome,
+          operationProbabilities: decision.operationProbabilities,
+          targetProbabilities: decision.targetProbabilities,
+          confidence: decision.confidence,
+          targetConfidence: decision.targetConfidence,
+          latencyMs: decision.latencyMs,
+          model: decision.model,
+          source: decision.source,
+        };
+        player.history.push(trace);
+        if (decision.operation !== "BLOCKED") player.status = "ready";
+        publish();
+        if (decision.operation === "BLOCKED") {
+          finishMatch("blocked", agentId);
         }
       } catch (error) {
         if (!(error instanceof DOMException && error.name === "AbortError")) {
-          finishMatch(nextPlayers, nextRace, {
-            winner: "draw",
-            label: "Race interrupted",
-            detail: "The shared board stopped before a result.",
-          });
+          player.status = "blocked";
+          publish();
+          finishMatch("blocked", agentId);
         }
+      } finally {
+        pendingRef.current[agentId] = false;
       }
     },
-    [finishMatch, publish, runRace],
+    [finishMatch, postToFrame, publish],
   );
+
+  const beginCountdown = useCallback(async () => {
+    if (countdownStartedRef.current || readyRef.current.size < 2) return;
+    countdownStartedRef.current = true;
+    setPhase("countdown");
+    const signal = controllerRef.current?.signal;
+    if (!signal) return;
+    try {
+      for (let count = 3; count >= 1; count -= 1) {
+        setCountdown(count);
+        await sleep(600, signal);
+      }
+      runningRef.current = true;
+      setPhase("running");
+      const deadline = Date.now() + MATCH_DURATION_MS;
+      setTimeLeft(60);
+      postToFrame("jev-a", { type: "snake-start" });
+      postToFrame("jev-b", { type: "snake-start" });
+      clockRef.current = window.setInterval(() => {
+        const remaining = Math.max(
+          0,
+          Math.ceil((deadline - Date.now()) / 1_000),
+        );
+        setTimeLeft(remaining);
+        if (remaining === 0) finishMatch("time");
+      }, 250);
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "AbortError")) {
+        finishMatch("blocked");
+      }
+    }
+  }, [finishMatch, postToFrame]);
+
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      const message = event.data as {
+        type?: string;
+        agentId?: PlayerId;
+        state?: SnakeSnapshot;
+      };
+      if (!message.agentId || !message.state) return;
+      if (
+        message.type !== "snake-ready" &&
+        message.type !== "snake-state" &&
+        message.type !== "snake-crash"
+      ) {
+        return;
+      }
+
+      snapshotsRef.current[message.agentId] = message.state;
+      const player = playersRef.current.find(
+        (candidate) => candidate.id === message.agentId,
+      );
+      if (!player) return;
+      player.score = message.state.score;
+      player.alive = message.state.alive;
+      if (message.type === "snake-ready") {
+        player.status = "ready";
+        readyRef.current.add(message.agentId);
+        publish();
+        void beginCountdown();
+      } else if (message.type === "snake-crash") {
+        publish();
+        if (runningRef.current) finishMatch("crash", message.agentId);
+      } else {
+        publish();
+        void runDecision(message.agentId, message.state);
+      }
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [beginCountdown, finishMatch, publish, runDecision]);
+
+  const startFight = useCallback(() => {
+    controllerRef.current?.abort();
+    if (clockRef.current) window.clearInterval(clockRef.current);
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    runningRef.current = false;
+    finishedRef.current = false;
+    countdownStartedRef.current = false;
+    readyRef.current = new Set();
+    snapshotsRef.current = {};
+    pendingRef.current = { "jev-a": false, "jev-b": false };
+    lastDecisionRef.current = { "jev-a": 0, "jev-b": 0 };
+    playersRef.current = [createPlayer("jev-a"), createPlayer("jev-b")];
+    publish();
+    setResult(null);
+    setTimeLeft(60);
+    setPhase("loading");
+    setMatchId((current) => current + 1);
+    setView("fight");
+  }, [publish]);
 
   const backToLobby = useCallback(() => {
     controllerRef.current?.abort();
-    controllerRef.current = null;
-    playersRef.current = null;
-    raceRef.current = null;
+    if (clockRef.current) window.clearInterval(clockRef.current);
+    runningRef.current = false;
+    stopFrames();
     setView("landing");
     setPhase("idle");
     setResult(null);
-  }, []);
+  }, [stopFrames]);
 
   useEffect(
     () => () => {
       controllerRef.current?.abort();
+      if (clockRef.current) window.clearInterval(clockRef.current);
     },
     [],
   );
 
-  const scoreLabel =
-    selectedGame === "spot-race"
-      ? "POINTS"
-      : selectedGame === "treasure-hunt"
-        ? "TREASURES"
-        : "CLAIMS";
+  const frameA = `/play/snake?agent=jev-a&seed=snake-a-${matchId}`;
+  const frameB = `/play/snake?agent=jev-b&seed=snake-b-${matchId}`;
 
   return (
-    <main className={view === "fight" ? "site fight-site" : "site"}>
+    <main className={`site snake-site view-${view}`}>
       <header className="site-header">
         <button
           className="brand"
@@ -598,125 +435,58 @@ export function Arena() {
       </header>
 
       {view === "landing" ? (
-        <section className="simple-landing">
+        <section className="snake-landing">
           <h1>Jev fights Jev</h1>
-          <div className="game-modal">
-            <span className="modal-kicker">SELECT A SHARED RACE</span>
-            <label className="game-select">
-              <span>GAME</span>
-              <div>
-                <select
-                  value={selectedGame}
-                  onChange={(event) =>
-                    setSelectedGame(event.target.value as GameId)
-                  }
-                >
-                  {GAME_ORDER.map((game) => (
-                    <option value={game} key={game}>
-                      {GAME_COPY[game].label}
-                    </option>
-                  ))}
-                </select>
-                <svg viewBox="0 0 16 16" aria-hidden="true">
-                  <path d="m3.5 6 4.5 4 4.5-4" />
-                </svg>
-              </div>
-            </label>
-            <div className="modal-game-rule">
-              <span>{GAME_COPY[selectedGame].eyebrow}</span>
-              <p>{GAME_COPY[selectedGame].rule}</p>
-            </div>
-            <button
-              className="fight-button"
-              onClick={() => startFight(selectedGame)}
-              type="button"
-            >
-              <span>FIGHT</span>
-              <i aria-hidden="true">↗</i>
+          <div className="snake-start-card">
+            <span>ONE GAME · TWO BROWSERS</span>
+            <h2>Snake</h2>
+            <p>Stay alive. Eat food. Highest score wins.</p>
+            <button onClick={startFight} type="button">
+              FIGHT <b>↗</b>
             </button>
           </div>
         </section>
       ) : (
-        <section className="fight-view shared-fight-view">
-          <div className="arena-titlebar">
-            <button className="back-button" onClick={backToLobby} type="button">
+        <section className="snake-fight">
+          <div className="snake-matchbar">
+            <button onClick={backToLobby} type="button">
               ← Lobby
             </button>
             <div>
-              <span>{GAME_COPY[selectedGame].eyebrow}</span>
-              <h1>{GAME_COPY[selectedGame].label}</h1>
+              <span>DUAL BROWSER MATCH</span>
+              <h1>Snake</h1>
             </div>
-            <div className="match-clock">
-              <span>{phase === "finished" ? "FINAL" : "MATCH CLOCK"}</span>
-              <strong>
-                00:{String(timeLeft).padStart(2, "0")}
-              </strong>
+            <div className="snake-clock">
+              <span>{phase === "finished" ? "FINAL" : "TIME"}</span>
+              <strong>00:{String(timeLeft).padStart(2, "0")}</strong>
             </div>
           </div>
 
           {result && (
-            <div className={`winner-banner winner-${result.winner}`}>
-              <div className="winner-trophy" aria-hidden="true">
-                ✦
-              </div>
+            <div className="snake-result">
               <div>
                 <span>MATCH RESULT</span>
-                <h2>{result.label}</h2>
+                <strong>{result.label}</strong>
                 <p>{result.detail}</p>
               </div>
-              <button
-                onClick={() => startFight(selectedGame)}
-                className="rematch-button"
-                type="button"
-              >
-                Rematch <span>↻</span>
+              <button onClick={startFight} type="button">
+                Rematch ↻
               </button>
             </div>
           )}
 
-          <div className="shared-race-layout">
-            <AgentPane
-              accent="coral"
-              player={players[0]}
-              score={race.scores["jev-a"]}
-              scoreLabel={scoreLabel}
-            />
-
-            <div className="shared-browser-shell">
-              <div className="browser-chrome">
-                <span className="browser-dots" aria-hidden="true">
-                  <i />
-                  <i />
-                  <i />
-                </span>
-                <div className="browser-address">
-                  arena.local/{selectedGame}?world=shared
-                </div>
-                <span className="browser-live">
-                  <i />
-                  SHARED
-                </span>
-              </div>
-              <SharedGameFixture state={race} onAction={claimCell} />
-              <div className="dom-index-pill">
-                <span>&lt;/&gt;</span> one indexed DOM · first claim wins
-              </div>
-            </div>
-
-            <AgentPane
-              accent="teal"
-              player={players[1]}
-              score={race.scores["jev-b"]}
-              scoreLabel={scoreLabel}
-            />
+          <div className="snake-duel">
+            <AgentPane player={players[0]} frameSrc={frameA} />
+            <span className="snake-versus" aria-hidden="true">
+              VS
+            </span>
+            <AgentPane player={players[1]} frameSrc={frameB} />
           </div>
 
-          {phase === "countdown" && (
-            <div className="countdown-overlay" aria-live="assertive">
-              <div>
-                <span>SHARED WORLD READY</span>
-                <strong>{countdown}</strong>
-              </div>
+          {(phase === "loading" || phase === "countdown") && (
+            <div className="snake-countdown" aria-live="assertive">
+              <span>{phase === "loading" ? "OPENING BROWSERS" : "READY"}</span>
+              <strong>{phase === "loading" ? "••" : countdown}</strong>
             </div>
           )}
         </section>

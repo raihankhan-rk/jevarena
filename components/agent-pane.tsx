@@ -1,13 +1,7 @@
 "use client";
 
+import { AgentAvatar } from "@/components/agent-avatar";
 import type { PlayerRun } from "@/lib/arena/types";
-
-interface AgentPaneProps {
-  player: PlayerRun;
-  score: number;
-  scoreLabel: string;
-  accent: "coral" | "teal";
-}
 
 function topProbabilities(values: Record<string, number>, limit = 3) {
   return Object.entries(values)
@@ -24,27 +18,22 @@ function ProbabilityRows({
 }) {
   const rows = topProbabilities(values);
   return (
-    <div className="probability-group">
-      <div className="probability-heading">
-        <span>{title}</span>
-        <span>p</span>
-      </div>
+    <div className="snake-probability-group">
+      <span className="snake-probability-title">{title}</span>
       {rows.length ? (
-        rows.map(([label, probability], index) => (
-          <div className="probability-row" key={label}>
-            <div className="probability-label">
-              <span className={index === 0 ? "top-choice" : ""}>
-                {label.replaceAll("-", " ").replaceAll("_", " ")}
-              </span>
+        rows.map(([label, probability]) => (
+          <div className="snake-probability" key={label}>
+            <span>
+              {label.replace("direction-", "").replaceAll("_", " ")}
               <b>{Math.round(probability * 100)}%</b>
-            </div>
-            <span className="probability-track">
-              <i style={{ width: `${Math.max(2, probability * 100)}%` }} />
             </span>
+            <i>
+              <em style={{ width: `${Math.max(2, probability * 100)}%` }} />
+            </i>
           </div>
         ))
       ) : (
-        <div className="probability-empty">Awaiting decision</div>
+        <small>Waiting for Jev…</small>
       )}
     </div>
   );
@@ -52,56 +41,67 @@ function ProbabilityRows({
 
 export function AgentPane({
   player,
-  score,
-  scoreLabel,
-  accent,
-}: AgentPaneProps) {
+  frameSrc,
+}: {
+  player: PlayerRun;
+  frameSrc: string;
+}) {
   const decision = player.latestDecision;
-  const latestTrace = player.history.at(-1);
+  const latest = player.history.at(-1);
 
   return (
-    <article className={`race-agent agent-pane accent-${accent}`}>
-      <header className="agent-pane-header">
-        <div className="agent-identity">
-          <span className="agent-avatar" aria-hidden="true">
-            {player.id === "jev-a" ? "J" : "J′"}
-          </span>
+    <article className={`snake-browser-pane pane-${player.id}`}>
+      <header className="snake-agent-header">
+        <div className={`snake-agent-id status-${player.status}`}>
+          <AgentAvatar agentId={player.id} size="regular" />
           <div>
-            <div className="agent-name-row">
-              <h2>{player.name}</h2>
-              <span className={`agent-status status-${player.status}`}>
-                <i />
-                {player.status}
-              </span>
-            </div>
-            <p>jev-latest</p>
+            <h2>{player.name}</h2>
+            <span>
+              <i />
+              {player.status}
+            </span>
           </div>
         </div>
-        <div className="agent-score">
-          <span>{scoreLabel}</span>
-          <strong>{score}</strong>
+        <div className="snake-score">
+          <span>SCORE</span>
+          <strong>{player.score}</strong>
         </div>
       </header>
 
-      <section
-        className="decision-console"
-        aria-label={`${player.name} decision telemetry`}
-      >
-        <div className="step-ticker">
+      <div className="snake-browser-chrome">
+        <span className="browser-dots" aria-hidden="true">
+          <i />
+          <i />
+          <i />
+        </span>
+        <div className="snake-address">
+          arena.local/play/snake?agent={player.id}
+        </div>
+        <span className="browser-live">
+          <i />
+          LIVE
+        </span>
+      </div>
+
+      <iframe
+        allow="none"
+        className="snake-frame"
+        id={`snake-frame-${player.id}`}
+        src={frameSrc}
+        title={`${player.name} live Snake browser`}
+      />
+
+      <section className="snake-telemetry">
+        <div className="snake-step-ticker">
           <div>
-            <span>STEP</span>
-            <strong>{String(player.history.length).padStart(2, "0")}</strong>
-          </div>
-          <div>
-            <span>OPERATION</span>
+            <span>OP</span>
             <strong>{decision?.operation ?? "OBSERVE"}</strong>
           </div>
           <div>
             <span>TARGET</span>
             <strong>
-              {decision?.targetId
-                ? `[${decision.targetId.split("-").at(-1)}] CELL`
-                : "—"}
+              {decision?.targetId?.replace("direction-", "").toUpperCase() ??
+                "—"}
             </strong>
           </div>
           <div>
@@ -109,38 +109,25 @@ export function AgentPane({
             <strong>{decision ? `${decision.latencyMs}ms` : "—"}</strong>
           </div>
           <div>
-            <span>CONFIDENCE</span>
+            <span>CONF.</span>
             <strong>
               {decision ? `${Math.round(decision.confidence * 100)}%` : "—"}
             </strong>
           </div>
         </div>
-
-        <div className="probability-grid">
+        <div className="snake-probability-grid">
           <ProbabilityRows
-            title="Operation head"
+            title="Operation"
             values={decision?.operationProbabilities ?? {}}
           />
           <ProbabilityRows
-            title="Target head"
+            title="Direction"
             values={decision?.targetProbabilities ?? {}}
           />
         </div>
-
-        <div className="console-footer">
-          <span className={`source-chip source-${decision?.source ?? "waiting"}`}>
-            {decision?.source === "jev"
-              ? decision.model
-              : decision?.source === "demo"
-                ? "DEMO POLICY"
-                : "MODEL READY"}
-          </span>
-          <p>
-            {latestTrace?.outcome ??
-              (player.status === "thinking"
-                ? "Choosing from the shared board…"
-                : "Waiting for the race.")}
-          </p>
+        <div className="snake-event-line">
+          <span>{decision?.source === "jev" ? decision.model : "DEMO"}</span>
+          <p>{latest?.outcome ?? "Browser ready."}</p>
         </div>
       </section>
     </article>

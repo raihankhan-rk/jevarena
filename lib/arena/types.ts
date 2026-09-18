@@ -1,35 +1,36 @@
-export type GameId = "spot-race" | "treasure-hunt" | "claim-race";
 export type PlayerId = "jev-a" | "jev-b";
 export type PlayerName = "Jev" | "Jev in parallel universe";
-export type AgentOperation = "CLICK" | "BLOCKED";
+export type Direction = "up" | "down" | "left" | "right";
+export type AgentOperation = "CLICK" | "WAIT" | "BLOCKED";
+
+export interface Point {
+  x: number;
+  y: number;
+}
+
+export interface SnakeSnapshot {
+  agentId: PlayerId;
+  gridSize: number;
+  snake: Point[];
+  food: Point;
+  direction: Direction;
+  safeDirections: Direction[];
+  score: number;
+  tick: number;
+  alive: boolean;
+}
 
 export interface ElementObservation {
-  id: string;
+  id: `direction-${Direction}`;
   index: number;
   role: "button";
   label: string;
-  state: "lit" | "hidden" | "available";
-}
-
-export interface AgentMemory {
-  round: number;
-  revealedCells: number[];
-  claimedCells: Record<string, PlayerName>;
-  scores: Record<PlayerName, number>;
-  treasuresFound?: number;
-  goalsComplete?: boolean;
-}
-
-export interface AgentHistoryItem {
-  step: number;
-  operation: AgentOperation;
-  targetId: string | null;
-  outcome: string;
+  state: "safe" | "legal";
 }
 
 export interface AgentStepRequest {
   agent: PlayerName;
-  game: GameId;
+  game: "snake";
   goal: string;
   page: {
     url: string;
@@ -37,8 +38,13 @@ export interface AgentStepRequest {
     visibleText: string;
   };
   elements: ElementObservation[];
-  memory: AgentMemory;
-  history: AgentHistoryItem[];
+  board: SnakeSnapshot;
+  history: Array<{
+    step: number;
+    operation: AgentOperation;
+    targetId: string | null;
+    outcome: string;
+  }>;
 }
 
 export interface AgentDecision {
@@ -54,7 +60,11 @@ export interface AgentDecision {
   blockedReason?: string;
 }
 
-export interface StepTrace extends AgentHistoryItem {
+export interface StepTrace {
+  step: number;
+  operation: AgentOperation;
+  targetId: string | null;
+  outcome: string;
   operationProbabilities: Record<string, number>;
   targetProbabilities: Record<string, number>;
   confidence: number;
@@ -67,26 +77,11 @@ export interface StepTrace extends AgentHistoryItem {
 export interface PlayerRun {
   id: PlayerId;
   name: PlayerName;
-  status: "ready" | "thinking" | "acting" | "done" | "blocked";
-  history: StepTrace[];
+  status: "loading" | "ready" | "thinking" | "acting" | "done" | "blocked";
+  score: number;
+  alive: boolean;
   latestDecision: AgentDecision | null;
-  pendingOutcome: string;
-}
-
-export interface SharedRaceState {
-  game: GameId;
-  seed: string;
-  round: number;
-  treasures: number[];
-  revealed: number[];
-  treasureOwners: Partial<Record<number, PlayerId>>;
-  claimOwners: Array<PlayerId | null>;
-  scores: Record<PlayerId, number>;
-  attempts: Record<PlayerId, number>;
-  lastCell: number | null;
-  collisionCell: number | null;
-  activeCell: number;
-  spotClaimedBy: PlayerId | null;
+  history: StepTrace[];
 }
 
 export interface MatchResult {

@@ -13,15 +13,13 @@ function isAgentStepRequest(value: unknown): value is AgentStepRequest {
   return (
     (request.agent === "Jev" ||
       request.agent === "Jev in parallel universe") &&
-    (request.game === "spot-race" ||
-      request.game === "treasure-hunt" ||
-      request.game === "claim-race") &&
+    request.game === "snake" &&
     typeof request.goal === "string" &&
     !!request.page &&
     typeof request.page.visibleText === "string" &&
     Array.isArray(request.elements) &&
     request.elements.length > 0 &&
-    request.elements.length <= 32 &&
+    request.elements.length <= 4 &&
     request.elements.every(
       (element) =>
         typeof element?.id === "string" &&
@@ -29,7 +27,13 @@ function isAgentStepRequest(value: unknown): value is AgentStepRequest {
         element.role === "button" &&
         typeof element.label === "string",
     ) &&
-    !!request.memory &&
+    !!request.board &&
+    request.board.gridSize === 18 &&
+    Array.isArray(request.board.snake) &&
+    request.board.snake.length >= 3 &&
+    Array.isArray(request.board.safeDirections) &&
+    typeof request.board.score === "number" &&
+    typeof request.board.alive === "boolean" &&
     Array.isArray(request.history) &&
     request.history.length <= 10
   );
