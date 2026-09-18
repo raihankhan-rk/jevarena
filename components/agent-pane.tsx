@@ -64,13 +64,19 @@ function StatusDot({ status }: { status: PlayerRun["status"] }) {
 export function AgentPane({ game, player, accent, onAction }: AgentPaneProps) {
   const decision = player.latestDecision;
   const latestTrace = player.history.at(-1);
+  const score =
+    game === "memory-match"
+      ? { label: "PAIRS", value: player.memory.matched.length / 2 }
+      : game === "2048"
+        ? { label: "SCORE", value: player.game2048.score }
+        : { label: "FOUND", value: player.treasure.found };
 
   return (
     <article className={`agent-pane accent-${accent}`}>
       <header className="agent-pane-header">
         <div className="agent-identity">
           <span className="agent-avatar" aria-hidden="true">
-            {player.name.at(-1)}
+            {player.id === "jev-a" ? "J" : "J′"}
           </span>
           <div>
             <div className="agent-name-row">
@@ -81,12 +87,8 @@ export function AgentPane({ game, player, accent, onAction }: AgentPaneProps) {
           </div>
         </div>
         <div className="agent-score">
-          <span>{game === "whack-a-mole" ? "HITS" : "PAIRS"}</span>
-          <strong>
-            {game === "whack-a-mole"
-              ? player.whack.score
-              : player.memory.matched.length / 2}
-          </strong>
+          <span>{score.label}</span>
+          <strong>{score.value}</strong>
         </div>
       </header>
 

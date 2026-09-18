@@ -11,14 +11,17 @@ function isAgentStepRequest(value: unknown): value is AgentStepRequest {
   const request = value as Partial<AgentStepRequest>;
 
   return (
-    (request.agent === "Jev A" || request.agent === "Jev B") &&
-    (request.game === "whack-a-mole" || request.game === "memory-match") &&
+    (request.agent === "Jev" ||
+      request.agent === "Jev in parallel universe") &&
+    (request.game === "memory-match" ||
+      request.game === "2048" ||
+      request.game === "treasure-hunt") &&
     typeof request.goal === "string" &&
     !!request.page &&
     typeof request.page.visibleText === "string" &&
     Array.isArray(request.elements) &&
     request.elements.length > 0 &&
-    request.elements.length <= 24 &&
+    request.elements.length <= 32 &&
     request.elements.every(
       (element) =>
         typeof element?.id === "string" &&

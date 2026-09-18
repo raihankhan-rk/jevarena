@@ -9,62 +9,6 @@ interface GameFixtureProps {
   onAction: (player: PlayerRun["id"], targetId: string) => void;
 }
 
-function WhackFixture({ player, onAction }: Omit<GameFixtureProps, "game">) {
-  return (
-    <div className="whack-fixture" aria-label={`${player.name} Whack-a-Mole fixture`}>
-      <div className="fixture-sky" aria-hidden="true">
-        <span className="cloud cloud-one" />
-        <span className="cloud cloud-two" />
-        <span className="sun" />
-      </div>
-      <div className="whack-scoreline">
-        <span>FIELD 01</span>
-        <strong>{String(player.whack.score).padStart(2, "0")} HITS</strong>
-      </div>
-      <div className="mole-grid">
-        {Array.from({ length: 9 }, (_, index) => {
-          const isActive = player.whack.activeHole === index;
-          const isHit = player.whack.hitHole === index;
-          const targetId = `hole-${index + 1}`;
-          return (
-            <button
-              className={`mole-hole${isActive ? " is-active" : ""}${
-                isHit ? " is-hit" : ""
-              }`}
-              data-element-id={targetId}
-              data-index={index + 1}
-              id={`${player.id}-${targetId}`}
-              key={targetId}
-              onClick={() => onAction(player.id, targetId)}
-              aria-label={
-                isActive
-                  ? `Hole ${index + 1}: live mole, click now`
-                  : `Hole ${index + 1}: empty`
-              }
-              tabIndex={-1}
-              type="button"
-            >
-              <span className="hole-index">{index + 1}</span>
-              <span className="mole" aria-hidden="true">
-                <span className="mole-ear mole-ear-left" />
-                <span className="mole-ear mole-ear-right" />
-                <span className="mole-face">
-                  <span className="mole-eye mole-eye-left" />
-                  <span className="mole-eye mole-eye-right" />
-                  <span className="mole-nose" />
-                </span>
-              </span>
-              <span className="hole-rim" aria-hidden="true" />
-              {isHit && <span className="hit-pop">+1</span>}
-            </button>
-          );
-        })}
-      </div>
-      <div className="fixture-ground" aria-hidden="true" />
-    </div>
-  );
-}
-
 function MemoryFixture({ player, onAction }: Omit<GameFixtureProps, "game">) {
   const matchedPairs = player.memory.matched.length / 2;
 
@@ -123,10 +67,118 @@ function MemoryFixture({ player, onAction }: Omit<GameFixtureProps, "game">) {
   );
 }
 
-export function GameFixture({ game, player, onAction }: GameFixtureProps) {
-  return game === "whack-a-mole" ? (
-    <WhackFixture player={player} onAction={onAction} />
-  ) : (
-    <MemoryFixture player={player} onAction={onAction} />
+const DIRECTIONS = [
+  { id: "move-up", glyph: "↑", label: "Up" },
+  { id: "move-left", glyph: "←", label: "Left" },
+  { id: "move-down", glyph: "↓", label: "Down" },
+  { id: "move-right", glyph: "→", label: "Right" },
+] as const;
+
+function Game2048Fixture({
+  player,
+  onAction,
+}: Omit<GameFixtureProps, "game">) {
+  return (
+    <div className="game2048-fixture" aria-label={`${player.name} 2048 fixture`}>
+      <div className="game2048-topline">
+        <span>MOVE {player.game2048.steps} / 24</span>
+        <strong>{player.game2048.score} SCORE</strong>
+      </div>
+      <div className="game2048-layout">
+        <div className="game2048-board">
+          {player.game2048.board.map((value, index) => (
+            <div
+              className={`tile tile-${Math.min(value, 2048)}`}
+              key={index}
+              aria-label={value ? `Tile ${value}` : "Empty tile"}
+            >
+              {value || ""}
+            </div>
+          ))}
+        </div>
+        <div className="direction-pad" aria-label="Indexed direction controls">
+          {DIRECTIONS.map((direction, index) => (
+            <button
+              aria-label={`Move tiles ${direction.label.toLowerCase()}`}
+              className={`direction-button direction-${direction.label.toLowerCase()}`}
+              data-element-id={direction.id}
+              data-index={index + 1}
+              id={`${player.id}-${direction.id}`}
+              key={direction.id}
+              onClick={() => onAction(player.id, direction.id)}
+              tabIndex={-1}
+              type="button"
+            >
+              <span>{direction.glyph}</span>
+              <small>{direction.label}</small>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
   );
+}
+
+function TreasureFixture({
+  player,
+  onAction,
+}: Omit<GameFixtureProps, "game">) {
+  return (
+    <div
+      className="treasure-fixture"
+      aria-label={`${player.name} Treasure Hunt fixture`}
+    >
+      <div className="treasure-topline">
+        <span>{player.treasure.clicks} CELLS REVEALED</span>
+        <strong>{player.treasure.found} OF 3 FOUND</strong>
+      </div>
+      <div className="treasure-grid">
+        {Array.from({ length: 25 }, (_, index) => {
+          const isRevealed = player.treasure.revealed.includes(index);
+          const isTreasure = player.treasure.treasures.includes(index);
+          const isLatest = player.treasure.lastCell === index;
+          const targetId = `cell-${index + 1}`;
+          return (
+            <button
+              aria-label={
+                isRevealed
+                  ? isTreasure
+                    ? `Cell ${index + 1}: treasure found`
+                    : `Cell ${index + 1}: empty`
+                  : `Hidden grid cell ${index + 1}`
+              }
+              className={`treasure-cell${isRevealed ? " is-revealed" : ""}${
+                isTreasure && isRevealed ? " has-treasure" : ""
+              }${isLatest ? " is-latest" : ""}`}
+              data-element-id={targetId}
+              data-index={index + 1}
+              disabled={isRevealed}
+              id={`${player.id}-${targetId}`}
+              key={targetId}
+              onClick={() => onAction(player.id, targetId)}
+              tabIndex={-1}
+              type="button"
+            >
+              <span className="treasure-cell-index">{index + 1}</span>
+              {isRevealed && (
+                <span className="treasure-cell-result" aria-hidden="true">
+                  {isTreasure ? "◆" : "·"}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+export function GameFixture({ game, player, onAction }: GameFixtureProps) {
+  if (game === "memory-match") {
+    return <MemoryFixture player={player} onAction={onAction} />;
+  }
+  if (game === "2048") {
+    return <Game2048Fixture player={player} onAction={onAction} />;
+  }
+  return <TreasureFixture player={player} onAction={onAction} />;
 }

@@ -1,10 +1,11 @@
 # JevArena
 
-**Two TypeSafe Jev agents. Two real DOMs. One winner.**
+**Jev fights Jev.**
 
 JevArena is a public, open-source spectator demo by
-[Raihan Khan](https://x.com/raihankhan_rk). Pick a browser game, press
-**Fight**, and watch two independent
+[Raihan Khan](https://x.com/raihankhan_rk). Pick one of three games in the
+landing modal, press **Fight**, and watch **Jev** race
+**Jev in parallel universe**. Both independent
 [TypeSafe Jev](https://docs.typesafe.ai/introduction) agents choose operations
 and indexed DOM targets side by side.
 
@@ -16,17 +17,25 @@ and indexed DOM targets side by side.
 
 ## Games
 
-### Whack-a-Mole
-
-Both players receive the same sequence of 18 moles. Each mole is visible for
-roughly one second. A click on the active indexed button scores one point;
-empty-hole clicks miss. The highest score wins.
-
 ### Memory Match
 
 Both players receive the same seeded 12-card deck, but maintain separate
-reveals, matches, histories, and observed memory. The first agent to clear all
-six pairs wins.
+reveals, matches, histories, and observed symbol memory. Mismatches turn
+face-down before the next decision; matches stay visible. The first agent to
+clear all six pairs wins. At the hard limit, matched pairs and then fewer flips
+break the tie.
+
+### 2048
+
+Both players receive the same seeded 4×4 board and control it through four
+indexed on-screen direction buttons. After 24 moves, the highest merge score
+wins; the highest tile breaks a tied score.
+
+### Treasure Hunt
+
+Both players search separate copies of the same seeded 5×5 grid through
+indexed cell buttons. Three treasures are hidden in identical positions. The
+first agent to find all three wins.
 
 ## How the duel works
 
@@ -65,7 +74,9 @@ Jev policy or fixture state format.
 - Jev requests are launched concurrently each decision cycle.
 - A timed-out or invalid model response marks that player `BLOCKED`.
 - One blocked player loses; two blocked players draw.
-- Memory timeout is decided by matched pairs; equal pair counts draw.
+- Memory limits are decided by pairs, then fewer flips.
+- 2048 is bounded to 24 direction clicks.
+- Treasure Hunt is bounded to the 25-cell grid.
 - `DONE` is advisory. Arena code independently verifies every win.
 
 ## Run locally

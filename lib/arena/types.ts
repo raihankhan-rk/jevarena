@@ -1,5 +1,10 @@
-export type GameId = "whack-a-mole" | "memory-match";
+export type GameId =
+  | "memory-match"
+  | "2048"
+  | "treasure-hunt";
 export type PlayerId = "jev-a" | "jev-b";
+export type PlayerName = "Jev" | "Jev in parallel universe";
+export type Direction = "up" | "down" | "left" | "right";
 export type AgentOperation =
   | "CLICK"
   | "SCROLL"
@@ -12,13 +17,19 @@ export interface ElementObservation {
   index: number;
   role: "button";
   label: string;
-  state: "active" | "face-down" | "revealed";
+  state: "active" | "face-down" | "revealed" | "available" | "hidden";
 }
 
 export interface AgentMemory {
   activeElementId?: string;
   revealedCards?: Array<{ id: string; symbol: string }>;
   seenCards?: Record<string, string>;
+  board?: number[];
+  availableDirections?: Direction[];
+  score?: number;
+  movesRemaining?: number;
+  revealedCells?: number[];
+  treasuresFound?: number;
   goalsComplete?: boolean;
 }
 
@@ -30,7 +41,7 @@ export interface AgentHistoryItem {
 }
 
 export interface AgentStepRequest {
-  agent: "Jev A" | "Jev B";
+  agent: PlayerName;
   game: GameId;
   goal: string;
   page: {
@@ -66,27 +77,38 @@ export interface StepTrace extends AgentHistoryItem {
   source: "jev" | "demo";
 }
 
-export interface WhackState {
-  score: number;
-  misses: number;
-  activeHole: number | null;
-  hitHole: number | null;
-}
-
 export interface MemoryState {
   deck: string[];
   revealed: number[];
   matched: number[];
   seen: Record<string, string>;
   moves: number;
+  flips: number;
+}
+
+export interface Game2048State {
+  board: number[];
+  score: number;
+  steps: number;
+  spawnCursor: number;
+  lastMoved: Direction | null;
+}
+
+export interface TreasureState {
+  treasures: number[];
+  revealed: number[];
+  found: number;
+  clicks: number;
+  lastCell: number | null;
 }
 
 export interface PlayerRun {
   id: PlayerId;
-  name: "Jev A" | "Jev B";
+  name: PlayerName;
   status: "ready" | "thinking" | "acting" | "done" | "blocked";
-  whack: WhackState;
   memory: MemoryState;
+  game2048: Game2048State;
+  treasure: TreasureState;
   history: StepTrace[];
   latestDecision: AgentDecision | null;
   pendingOutcome: string;

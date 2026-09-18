@@ -4,14 +4,15 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { AgentPane } from "@/components/agent-pane";
 import {
+  add2048Tile,
   buildAgentRequest,
-  createMemoryDeck,
   createPlayer,
-  createWhackSequence,
   GAME_COPY,
+  move2048,
 } from "@/lib/arena/games";
 import type {
   AgentDecision,
+  Direction,
   GameId,
   MatchResult,
   PlayerId,
@@ -19,11 +20,13 @@ import type {
   StepTrace,
 } from "@/lib/arena/types";
 
-const MATCH_SEED = "jevarena-public-demo-v1";
-const WHACK_ROUNDS = 18;
-const WHACK_ROUND_MS = 1_250;
-const MEMORY_TIMEOUT_MS = 45_000;
-const MEMORY_STEP_LIMIT = 36;
+const MATCH_SEED = "jevarena-public-demo-v2";
+const MEMORY_STEP_LIMIT = 42;
+const MEMORY_TIMEOUT_MS = 75_000;
+const GAME_2048_STEPS = 24;
+const TREASURE_STEP_LIMIT = 25;
+
+const GAME_ORDER: GameId[] = ["memory-match", "2048", "treasure-hunt"];
 
 function sleep(ms: number, signal: AbortSignal) {
   return new Promise<void>((resolve, reject) => {
@@ -46,13 +49,21 @@ function sleep(ms: number, signal: AbortSignal) {
 function clonePlayer(player: PlayerRun): PlayerRun {
   return {
     ...player,
-    whack: { ...player.whack },
     memory: {
       ...player.memory,
       deck: [...player.memory.deck],
       revealed: [...player.memory.revealed],
       matched: [...player.memory.matched],
       seen: { ...player.memory.seen },
+    },
+    game2048: {
+      ...player.game2048,
+      board: [...player.game2048.board],
+    },
+    treasure: {
+      ...player.treasure,
+      treasures: [...player.treasure.treasures],
+      revealed: [...player.treasure.revealed],
     },
     history: [...player.history],
     latestDecision: player.latestDecision
@@ -75,13 +86,7 @@ function blockedClientDecision(reason: string): AgentDecision {
   return {
     operation: "BLOCKED",
     targetId: null,
-    operationProbabilities: {
-      CLICK: 0,
-      SCROLL: 0,
-      WAIT: 0,
-      DONE: 0,
-      BLOCKED: 1,
-    },
+    operationProbabilities: { CLICK: 0, BLOCKED: 1 },
     targetProbabilities: {},
     confidence: 1,
     targetConfidence: null,
@@ -130,6 +135,17 @@ function GithubIcon() {
   );
 }
 
+function XIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        fill="currentColor"
+        d="M18.9 2H22l-6.8 7.8L23.2 22H17l-4.9-6.4L6.5 22H3.3l7.3-8.4L2.9 2h6.3l4.4 5.8L18.9 2Zm-1.1 17.9h1.7L8.3 4H6.5l11.3 15.9Z"
+      />
+    </svg>
+  );
+}
+
 function BrandMark() {
   return (
     <span className="brand-mark" aria-hidden="true">
@@ -139,10 +155,22 @@ function BrandMark() {
   );
 }
 
+function isComplete(game: GameId, player: PlayerRun) {
+  if (game === "memory-match") {
+    return player.memory.matched.length === player.memory.deck.length;
+  }
+  if (game === "2048") {
+    return (
+      player.game2048.steps >= GAME_2048_STEPS ||
+      Math.max(...player.game2048.board) >= 2048
+    );
+  }
+  return player.treasure.found >= player.treasure.treasures.length;
+}
+
 export function Arena() {
-  const [selectedGame, setSelectedGame] =
-    useState<GameId>("whack-a-mole");
-  const [activeGame, setActiveGame] = useState<GameId>("whack-a-mole");
+  const [selectedGame, setSelectedGame] = useState<GameId>("memory-match");
+  const [activeGame, setActiveGame] = useState<GameId>("memory-match");
   const [view, setView] = useState<"landing" | "fight">("landing");
   const [phase, setPhase] = useState<
     "idle" | "countdown" | "running" | "finished"
@@ -150,14 +178,14 @@ export function Arena() {
   const [countdown, setCountdown] = useState(3);
   const [timeLeft, setTimeLeft] = useState(0);
   const [result, setResult] = useState<MatchResult | null>(null);
-  const [players, setPlayers] = useState<[PlayerRun, PlayerRun]>(() => {
-    const deck = createMemoryDeck(MATCH_SEED);
-    return [createPlayer("jev-a", deck), createPlayer("jev-b", deck)];
-  });
+  const [players, setPlayers] = useState<[PlayerRun, PlayerRun]>(() => [
+    createPlayer("jev-a", MATCH_SEED),
+    createPlayer("jev-b", MATCH_SEED),
+  ]);
 
   const controllerRef = useRef<AbortController | null>(null);
   const runPlayersRef = useRef<PlayerRun[] | null>(null);
-  const activeGameRef = useRef<GameId>("whack-a-mole");
+  const activeGameRef = useRef<GameId>("memory-match");
 
   const publish = useCallback((next: PlayerRun[]) => {
     setPlayers(clonePlayers(next));
@@ -165,42 +193,71 @@ export function Arena() {
 
   const executeFixtureAction = useCallback(
     (playerId: PlayerId, targetId: string) => {
-      const current = runPlayersRef.current;
-      const player = current?.find((candidate) => candidate.id === playerId);
+      const player = runPlayersRef.current?.find(
+        (candidate) => candidate.id === playerId,
+      );
       if (!player || player.status === "blocked") return;
 
-      if (activeGameRef.current === "whack-a-mole") {
-        const hole = Number(targetId.split("-")[1]) - 1;
+      if (activeGameRef.current === "memory-match") {
+        const cardIndex = Number(targetId.split("-")[1]) - 1;
+        const memory = player.memory;
         if (
-          hole === player.whack.activeHole &&
-          player.whack.hitHole !== player.whack.activeHole
+          !Number.isInteger(cardIndex) ||
+          memory.revealed.includes(cardIndex) ||
+          memory.matched.includes(cardIndex) ||
+          memory.revealed.length >= 2
         ) {
-          player.whack.score += 1;
-          player.whack.hitHole = hole;
-          player.pendingOutcome = `Clicked [${hole + 1}] LIVE MOLE · hit +1`;
+          player.pendingOutcome = `Rejected stale target ${targetId}`;
+          return;
+        }
+        memory.revealed.push(cardIndex);
+        memory.seen[targetId] = memory.deck[cardIndex];
+        memory.flips += 1;
+        if (memory.revealed.length === 2) memory.moves += 1;
+        player.pendingOutcome = `Clicked [${cardIndex + 1}] · revealed ${memory.deck[cardIndex]}`;
+        return;
+      }
+
+      if (activeGameRef.current === "2048") {
+        const direction = targetId.replace("move-", "") as Direction;
+        if (!["up", "down", "left", "right"].includes(direction)) {
+          player.pendingOutcome = `Rejected invalid direction ${targetId}`;
+          return;
+        }
+        const moved = move2048(player.game2048.board, direction);
+        player.game2048.steps += 1;
+        player.game2048.lastMoved = direction;
+        if (moved.changed) {
+          player.game2048.score += moved.scoreGain;
+          player.game2048.board = add2048Tile(
+            moved.board,
+            MATCH_SEED,
+            player.game2048.spawnCursor,
+          );
+          player.game2048.spawnCursor += 1;
+          player.pendingOutcome = `Moved ${direction.toUpperCase()} · +${moved.scoreGain} score`;
         } else {
-          player.whack.misses += 1;
-          player.pendingOutcome = `Clicked [${hole + 1}] empty hole · miss`;
+          player.pendingOutcome = `Moved ${direction.toUpperCase()} · board unchanged`;
         }
         return;
       }
 
-      const cardIndex = Number(targetId.split("-")[1]) - 1;
-      const memory = player.memory;
+      const cellIndex = Number(targetId.split("-")[1]) - 1;
       if (
-        !Number.isInteger(cardIndex) ||
-        memory.revealed.includes(cardIndex) ||
-        memory.matched.includes(cardIndex) ||
-        memory.revealed.length >= 2
+        !Number.isInteger(cellIndex) ||
+        player.treasure.revealed.includes(cellIndex)
       ) {
         player.pendingOutcome = `Rejected stale target ${targetId}`;
         return;
       }
-
-      memory.revealed.push(cardIndex);
-      memory.seen[targetId] = memory.deck[cardIndex];
-      if (memory.revealed.length === 2) memory.moves += 1;
-      player.pendingOutcome = `Clicked [${cardIndex + 1}] · revealed ${memory.deck[cardIndex]}`;
+      player.treasure.revealed.push(cellIndex);
+      player.treasure.clicks += 1;
+      player.treasure.lastCell = cellIndex;
+      const foundTreasure = player.treasure.treasures.includes(cellIndex);
+      if (foundTreasure) player.treasure.found += 1;
+      player.pendingOutcome = foundTreasure
+        ? `Clicked [${cellIndex + 1}] · TREASURE FOUND`
+        : `Clicked [${cellIndex + 1}] · empty`;
     },
     [],
   );
@@ -214,18 +271,19 @@ export function Arena() {
     ) => {
       decisions.forEach((decision, index) => {
         const player = currentPlayers[index];
-        if (!decision || player.status === "blocked") return;
+        if (!decision || player.status === "blocked" || player.status === "done")
+          return;
         player.latestDecision = decision;
         player.pendingOutcome = "";
         player.status =
           decision.operation === "BLOCKED" ? "blocked" : "acting";
       });
       publish(currentPlayers);
-      await sleep(115, signal);
+      await sleep(110, signal);
 
       decisions.forEach((decision, index) => {
         const player = currentPlayers[index];
-        if (!decision) return;
+        if (!decision || player.status === "done") return;
 
         if (decision.operation === "CLICK" && decision.targetId) {
           const element = document.getElementById(
@@ -236,20 +294,11 @@ export function Arena() {
           } else {
             player.pendingOutcome = `Target ${decision.targetId} went stale · no click`;
           }
-        } else if (decision.operation === "WAIT") {
-          player.pendingOutcome = "WAIT · fixture unchanged";
-        } else if (decision.operation === "SCROLL") {
-          player.pendingOutcome = "SCROLL · all fixture controls already visible";
-        } else if (decision.operation === "DONE") {
-          const complete =
-            game === "memory-match" &&
-            player.memory.matched.length === player.memory.deck.length;
-          player.pendingOutcome = complete
-            ? "DONE · board independently verified"
-            : "DONE rejected · board is not complete";
         } else if (decision.operation === "BLOCKED") {
           player.pendingOutcome =
             decision.blockedReason ?? "No supported action can progress";
+        } else {
+          player.pendingOutcome = `${decision.operation} rejected · click required`;
         }
 
         const trace: StepTrace = {
@@ -276,7 +325,9 @@ export function Arena() {
   const getDecisions = useCallback(
     async (game: GameId, currentPlayers: PlayerRun[], signal: AbortSignal) => {
       currentPlayers.forEach((player) => {
-        if (player.status !== "blocked" && player.status !== "done") {
+        if (isComplete(game, player)) {
+          player.status = "done";
+        } else if (player.status !== "blocked") {
           player.status = "thinking";
         }
       });
@@ -296,9 +347,6 @@ export function Arena() {
     (currentPlayers: PlayerRun[], matchResult: MatchResult) => {
       currentPlayers.forEach((player) => {
         if (player.status !== "blocked") player.status = "done";
-        if (matchResult.winner !== "draw" && player.id === matchResult.winner) {
-          player.status = "done";
-        }
       });
       publish(currentPlayers);
       setResult(matchResult);
@@ -308,13 +356,13 @@ export function Arena() {
     [publish],
   );
 
-  const resolveWhackResult = useCallback((currentPlayers: PlayerRun[]) => {
+  const blockedResult = useCallback((currentPlayers: PlayerRun[]) => {
     const [first, second] = currentPlayers;
     if (first.status === "blocked" && second.status === "blocked") {
       return {
         winner: "draw" as const,
         label: "Double BLOCKED",
-        detail: "Neither Jev returned a valid action before timeout.",
+        detail: "Neither Jev returned another valid click.",
       };
     }
     if (first.status === "blocked" || second.status === "blocked") {
@@ -322,157 +370,90 @@ export function Arena() {
       return {
         winner: winner.id,
         label: `${winner.name} wins`,
-        detail: "Opponent BLOCKED. Valid execution takes the round.",
+        detail: "Opponent BLOCKED before the game ended.",
       };
     }
-    if (first.whack.score === second.whack.score) {
-      return {
-        winner: "draw" as const,
-        label: "Photo finish",
-        detail: `A ${first.whack.score}–${second.whack.score} draw across identical spawns.`,
-      };
-    }
-    const winner =
-      first.whack.score > second.whack.score ? first : second;
-    return {
-      winner: winner.id,
-      label: `${winner.name} wins`,
-      detail: `${first.whack.score}–${second.whack.score} across 18 identical one-second spawns.`,
-    };
+    return null;
   }, []);
-
-  const runWhack = useCallback(
-    async (
-      currentPlayers: PlayerRun[],
-      signal: AbortSignal,
-      deadline: number,
-    ) => {
-      const sequence = createWhackSequence(MATCH_SEED, WHACK_ROUNDS);
-
-      for (const activeHole of sequence) {
-        if (signal.aborted || currentPlayers.every((p) => p.status === "blocked"))
-          break;
-        const roundStarted = performance.now();
-        currentPlayers.forEach((player) => {
-          player.whack.activeHole = activeHole;
-          player.whack.hitHole = null;
-        });
-        publish(currentPlayers);
-
-        const decisions = await getDecisions(
-          "whack-a-mole",
-          currentPlayers,
-          signal,
-        );
-        await executeDecisions(
-          "whack-a-mole",
-          currentPlayers,
-          decisions,
-          signal,
-        );
-
-        const remaining = WHACK_ROUND_MS - (performance.now() - roundStarted);
-        if (remaining > 0) await sleep(remaining, signal);
-        currentPlayers.forEach((player) => {
-          player.whack.activeHole = null;
-          player.whack.hitHole = null;
-        });
-        publish(currentPlayers);
-        if (Date.now() >= deadline) break;
-      }
-
-      finishMatch(currentPlayers, resolveWhackResult(currentPlayers));
-    },
-    [
-      executeDecisions,
-      finishMatch,
-      getDecisions,
-      publish,
-      resolveWhackResult,
-    ],
-  );
 
   const resolveMemoryPairs = useCallback(
     async (currentPlayers: PlayerRun[], signal: AbortSignal) => {
-      const hasPair = currentPlayers.some(
-        (player) => player.memory.revealed.length === 2,
-      );
-      if (!hasPair) return;
+      if (
+        !currentPlayers.some((player) => player.memory.revealed.length === 2)
+      ) {
+        return;
+      }
       publish(currentPlayers);
-      await sleep(430, signal);
+      await sleep(460, signal);
 
       currentPlayers.forEach((player) => {
         const [first, second] = player.memory.revealed;
         if (first === undefined || second === undefined) return;
-        const isMatch =
-          player.memory.deck[first] === player.memory.deck[second];
-        const latestTrace = player.history.at(-1);
-        if (isMatch) {
+        const matched = player.memory.deck[first] === player.memory.deck[second];
+        const latest = player.history.at(-1);
+        if (matched) {
           player.memory.matched.push(first, second);
-          if (latestTrace) latestTrace.outcome += " · PAIR MATCHED";
-        } else if (latestTrace) {
-          latestTrace.outcome += " · mismatch, cards reset";
+          if (latest) latest.outcome += " · PAIR MATCHED";
+        } else if (latest) {
+          latest.outcome += " · mismatch, flipped face-down";
         }
         player.memory.revealed = [];
       });
       publish(currentPlayers);
+      await sleep(120, signal);
     },
     [publish],
   );
 
-  const memoryResult = useCallback((currentPlayers: PlayerRun[]) => {
-    const [first, second] = currentPlayers;
-    const firstComplete =
-      first.memory.matched.length === first.memory.deck.length;
-    const secondComplete =
-      second.memory.matched.length === second.memory.deck.length;
-
-    if (firstComplete && secondComplete) {
+  const memoryResult = useCallback(
+    (currentPlayers: PlayerRun[]): MatchResult => {
+      const blocked = blockedResult(currentPlayers);
+      if (blocked) return blocked;
+      const [first, second] = currentPlayers;
+      const firstComplete = isComplete("memory-match", first);
+      const secondComplete = isComplete("memory-match", second);
+      if (firstComplete && secondComplete) {
+        return {
+          winner: "draw",
+          label: "Perfect sync",
+          detail: "Both Jevs cleared the deck on the same click cycle.",
+        };
+      }
+      if (firstComplete || secondComplete) {
+        const winner = firstComplete ? first : second;
+        return {
+          winner: winner.id,
+          label: `${winner.name} clears it`,
+          detail: `Six pairs in ${winner.memory.flips} flips.`,
+        };
+      }
+      const firstPairs = first.memory.matched.length / 2;
+      const secondPairs = second.memory.matched.length / 2;
+      if (firstPairs !== secondPairs) {
+        const winner = firstPairs > secondPairs ? first : second;
+        return {
+          winner: winner.id,
+          label: `${winner.name} on pairs`,
+          detail: `Limit reached at ${firstPairs}–${secondPairs} pairs.`,
+        };
+      }
+      if (first.memory.flips !== second.memory.flips) {
+        const winner =
+          first.memory.flips < second.memory.flips ? first : second;
+        return {
+          winner: winner.id,
+          label: `${winner.name} on efficiency`,
+          detail: `${firstPairs} pairs each; fewer flips wins.`,
+        };
+      }
       return {
-        winner: "draw" as const,
-        label: "Perfect sync",
-        detail: "Both Jevs cleared the shared deck on the same decision cycle.",
+        winner: "draw",
+        label: "Limit reached",
+        detail: `${firstPairs} pairs and ${first.memory.flips} flips each.`,
       };
-    }
-    if (firstComplete || secondComplete) {
-      const winner = firstComplete ? first : second;
-      return {
-        winner: winner.id,
-        label: `${winner.name} clears it`,
-        detail: `All six pairs found in ${winner.memory.moves} moves.`,
-      };
-    }
-    if (first.status === "blocked" && second.status !== "blocked") {
-      return {
-        winner: second.id,
-        label: `${second.name} wins`,
-        detail: "Opponent BLOCKED before the board was cleared.",
-      };
-    }
-    if (second.status === "blocked" && first.status !== "blocked") {
-      return {
-        winner: first.id,
-        label: `${first.name} wins`,
-        detail: "Opponent BLOCKED before the board was cleared.",
-      };
-    }
-
-    const firstPairs = first.memory.matched.length / 2;
-    const secondPairs = second.memory.matched.length / 2;
-    if (firstPairs === secondPairs) {
-      return {
-        winner: "draw" as const,
-        label: "Time. Draw.",
-        detail: `Both Jevs found ${firstPairs} pair${firstPairs === 1 ? "" : "s"} before timeout.`,
-      };
-    }
-    const winner = firstPairs > secondPairs ? first : second;
-    return {
-      winner: winner.id,
-      label: `${winner.name} on points`,
-      detail: `Timeout: ${firstPairs}–${secondPairs} matched pairs.`,
-    };
-  }, []);
+    },
+    [blockedResult],
+  );
 
   const runMemory = useCallback(
     async (
@@ -481,14 +462,14 @@ export function Arena() {
       deadline: number,
     ) => {
       for (let step = 0; step < MEMORY_STEP_LIMIT; step += 1) {
-        if (signal.aborted || Date.now() >= deadline) break;
-        const completed = currentPlayers.filter(
-          (player) =>
-            player.memory.matched.length === player.memory.deck.length,
-        );
-        if (completed.length) break;
-        if (currentPlayers.every((player) => player.status === "blocked")) break;
-
+        if (
+          signal.aborted ||
+          Date.now() >= deadline ||
+          currentPlayers.some((player) => isComplete("memory-match", player)) ||
+          currentPlayers.every((player) => player.status === "blocked")
+        ) {
+          break;
+        }
         const decisions = await getDecisions(
           "memory-match",
           currentPlayers,
@@ -501,9 +482,7 @@ export function Arena() {
           signal,
         );
         await resolveMemoryPairs(currentPlayers, signal);
-        await sleep(180, signal);
       }
-
       finishMatch(currentPlayers, memoryResult(currentPlayers));
     },
     [
@@ -513,6 +492,133 @@ export function Arena() {
       memoryResult,
       resolveMemoryPairs,
     ],
+  );
+
+  const game2048Result = useCallback(
+    (currentPlayers: PlayerRun[]): MatchResult => {
+      const blocked = blockedResult(currentPlayers);
+      if (blocked) return blocked;
+      const [first, second] = currentPlayers;
+      if (first.game2048.score !== second.game2048.score) {
+        const winner =
+          first.game2048.score > second.game2048.score ? first : second;
+        return {
+          winner: winner.id,
+          label: `${winner.name} wins`,
+          detail: `${first.game2048.score}–${second.game2048.score} after 24 moves.`,
+        };
+      }
+      const firstMax = Math.max(...first.game2048.board);
+      const secondMax = Math.max(...second.game2048.board);
+      if (firstMax !== secondMax) {
+        const winner = firstMax > secondMax ? first : second;
+        return {
+          winner: winner.id,
+          label: `${winner.name} wins`,
+          detail: `Scores tied; ${winner.name} built the higher tile.`,
+        };
+      }
+      return {
+        winner: "draw",
+        label: "Even boards",
+        detail: `${first.game2048.score} points and a ${firstMax} high tile each.`,
+      };
+    },
+    [blockedResult],
+  );
+
+  const run2048 = useCallback(
+    async (currentPlayers: PlayerRun[], signal: AbortSignal) => {
+      for (let step = 0; step < GAME_2048_STEPS; step += 1) {
+        if (
+          signal.aborted ||
+          currentPlayers.some(
+            (player) => Math.max(...player.game2048.board) >= 2048,
+          ) ||
+          currentPlayers.every((player) => player.status === "blocked")
+        ) {
+          break;
+        }
+        const decisions = await getDecisions("2048", currentPlayers, signal);
+        await executeDecisions(
+          "2048",
+          currentPlayers,
+          decisions,
+          signal,
+        );
+        await sleep(170, signal);
+      }
+      finishMatch(currentPlayers, game2048Result(currentPlayers));
+    },
+    [executeDecisions, finishMatch, game2048Result, getDecisions],
+  );
+
+  const treasureResult = useCallback(
+    (currentPlayers: PlayerRun[]): MatchResult => {
+      const blocked = blockedResult(currentPlayers);
+      if (blocked) return blocked;
+      const [first, second] = currentPlayers;
+      const firstComplete = isComplete("treasure-hunt", first);
+      const secondComplete = isComplete("treasure-hunt", second);
+      if (firstComplete && secondComplete) {
+        return {
+          winner: "draw",
+          label: "Same spot, same time",
+          detail: "Both Jevs found all three treasures together.",
+        };
+      }
+      if (firstComplete || secondComplete) {
+        const winner = firstComplete ? first : second;
+        return {
+          winner: winner.id,
+          label: `${winner.name} found them`,
+          detail: `All three treasures in ${winner.treasure.clicks} clicks.`,
+        };
+      }
+      if (first.treasure.found !== second.treasure.found) {
+        const winner =
+          first.treasure.found > second.treasure.found ? first : second;
+        return {
+          winner: winner.id,
+          label: `${winner.name} found more`,
+          detail: `${first.treasure.found}–${second.treasure.found} treasures.`,
+        };
+      }
+      return {
+        winner: "draw",
+        label: "Grid exhausted",
+        detail: `${first.treasure.found} treasures each.`,
+      };
+    },
+    [blockedResult],
+  );
+
+  const runTreasure = useCallback(
+    async (currentPlayers: PlayerRun[], signal: AbortSignal) => {
+      for (let step = 0; step < TREASURE_STEP_LIMIT; step += 1) {
+        if (
+          signal.aborted ||
+          currentPlayers.some((player) => isComplete("treasure-hunt", player)) ||
+          currentPlayers.every((player) => player.status === "blocked")
+        ) {
+          break;
+        }
+        const decisions = await getDecisions(
+          "treasure-hunt",
+          currentPlayers,
+          signal,
+        );
+        await executeDecisions(
+          "treasure-hunt",
+          currentPlayers,
+          decisions,
+          signal,
+        );
+        await sleep(190, signal);
+      }
+      finishMatch(currentPlayers, treasureResult(currentPlayers));
+    },
+    [executeDecisions, finishMatch, getDecisions, treasureResult],
   );
 
   const startFight = useCallback(
@@ -526,10 +632,9 @@ export function Arena() {
       setResult(null);
       setPhase("countdown");
 
-      const deck = createMemoryDeck(MATCH_SEED);
       const nextPlayers = [
-        createPlayer("jev-a", deck),
-        createPlayer("jev-b", deck),
+        createPlayer("jev-a", MATCH_SEED),
+        createPlayer("jev-b", MATCH_SEED),
       ];
       runPlayersRef.current = nextPlayers;
       publish(nextPlayers);
@@ -537,14 +642,15 @@ export function Arena() {
       try {
         for (let count = 3; count >= 1; count -= 1) {
           setCountdown(count);
-          await sleep(650, controller.signal);
+          await sleep(600, controller.signal);
         }
-
         setPhase("running");
         const duration =
-          game === "whack-a-mole"
-            ? WHACK_ROUNDS * WHACK_ROUND_MS + 2_000
-            : MEMORY_TIMEOUT_MS;
+          game === "memory-match"
+            ? MEMORY_TIMEOUT_MS
+            : game === "2048"
+              ? 45_000
+              : 40_000;
         const deadline = Date.now() + duration;
         setTimeLeft(Math.ceil(duration / 1_000));
         const clock = window.setInterval(() => {
@@ -552,10 +658,12 @@ export function Arena() {
         }, 250);
 
         try {
-          if (game === "whack-a-mole") {
-            await runWhack(nextPlayers, controller.signal, deadline);
-          } else {
+          if (game === "memory-match") {
             await runMemory(nextPlayers, controller.signal, deadline);
+          } else if (game === "2048") {
+            await run2048(nextPlayers, controller.signal);
+          } else {
+            await runTreasure(nextPlayers, controller.signal);
           }
         } finally {
           window.clearInterval(clock);
@@ -570,7 +678,7 @@ export function Arena() {
         }
       }
     },
-    [finishMatch, publish, runMemory, runWhack],
+    [finishMatch, publish, run2048, runMemory, runTreasure],
   );
 
   const backToLobby = useCallback(() => {
@@ -589,10 +697,6 @@ export function Arena() {
     [],
   );
 
-  const demoMode =
-    players.some((player) => player.latestDecision?.source === "demo") &&
-    phase !== "countdown";
-
   return (
     <main className={view === "fight" ? "site fight-site" : "site"}>
       <header className="site-header">
@@ -605,116 +709,54 @@ export function Arena() {
           <BrandMark />
           <span>JevArena</span>
         </button>
-        <div className="header-meta">
-          <span className="header-live">
-            <i />
-            OPEN SOURCE ARENA
-          </span>
-          <a
-            className="github-link"
-            href="https://github.com/raihankhan-rk/jevarena"
-            rel="noreferrer"
-            target="_blank"
-          >
-            <GithubIcon />
-            <span>raihankhan-rk/jevarena</span>
-          </a>
-        </div>
+        <a
+          className="github-link"
+          href="https://github.com/raihankhan-rk/jevarena"
+          rel="noreferrer"
+          target="_blank"
+        >
+          <GithubIcon />
+          <span>raihankhan-rk/jevarena</span>
+        </a>
       </header>
 
       {view === "landing" ? (
-        <section className="landing">
-          <div className="hero-copy">
-            <div className="hero-kicker">
-              <span>01</span>
-              TWO JEVS ENTER
-            </div>
-            <h1>
-              Browser agents,
-              <br />
-              <em>head to head.</em>
-            </h1>
-            <p>
-              Two TypeSafe Jev agents. Two real, indexed DOMs. No language
-              model prose, no typing—just fast probabilistic decisions you can
-              watch.
-            </p>
-            <div className="hero-proof">
-              <span>
-                <i>✓</i> Click only
-              </span>
-              <span>
-                <i>✓</i> Shared seed
-              </span>
-              <span>
-                <i>✓</i> Live probabilities
-              </span>
-            </div>
-          </div>
-
-          <div className="fight-card-wrap">
-            <div className="fight-card-orbit orbit-one" />
-            <div className="fight-card-orbit orbit-two" />
-            <div className="fight-card">
-              <div className="fight-card-top">
-                <span>CHOOSE THE TRIAL</span>
-                <b>LIVE / 02 GAMES</b>
+        <section className="simple-landing">
+          <h1>Jev fights Jev</h1>
+          <div className="game-modal">
+            <span className="modal-kicker">SELECT A GAME</span>
+            <label className="game-select">
+              <span>GAME</span>
+              <div>
+                <select
+                  value={selectedGame}
+                  onChange={(event) =>
+                    setSelectedGame(event.target.value as GameId)
+                  }
+                >
+                  {GAME_ORDER.map((game) => (
+                    <option value={game} key={game}>
+                      {GAME_COPY[game].label}
+                    </option>
+                  ))}
+                </select>
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <path d="m3.5 6 4.5 4 4.5-4" />
+                </svg>
               </div>
-              <label className="game-select">
-                <span>GAME</span>
-                <div>
-                  <select
-                    value={selectedGame}
-                    onChange={(event) =>
-                      setSelectedGame(event.target.value as GameId)
-                    }
-                  >
-                    <option value="whack-a-mole">Whack-a-Mole</option>
-                    <option value="memory-match">Memory Match</option>
-                  </select>
-                  <svg viewBox="0 0 16 16" aria-hidden="true">
-                    <path d="m3.5 6 4.5 4 4.5-4" />
-                  </svg>
-                </div>
-              </label>
-
-              <div className="selected-game-info">
-                <div className="game-number">
-                  {selectedGame === "whack-a-mole" ? "01" : "02"}
-                </div>
-                <div>
-                  <span>{GAME_COPY[selectedGame].eyebrow}</span>
-                  <p>{GAME_COPY[selectedGame].description}</p>
-                </div>
-              </div>
-              <div className="rules-row">
-                <span>
-                  <i className="rules-icon rules-icon-grid" />
-                  {GAME_COPY[selectedGame].rule}
-                </span>
-                <span>
-                  <i className="rules-icon rules-icon-clock" />
-                  {GAME_COPY[selectedGame].duration}
-                </span>
-              </div>
-              <button
-                className="fight-button"
-                onClick={() => startFight(selectedGame)}
-                type="button"
-              >
-                <span>FIGHT</span>
-                <i aria-hidden="true">↗</i>
-              </button>
-              <p className="fight-card-note">
-                Server-only Jev · powered by <b>jev-latest</b>
-              </p>
+            </label>
+            <div className="modal-game-rule">
+              <span>{GAME_COPY[selectedGame].eyebrow}</span>
+              <p>{GAME_COPY[selectedGame].rule}</p>
             </div>
-          </div>
-
-          <div className="landing-bottom">
-            <span>TYPE<span>SAFE</span> SYSTEM ONE</span>
-            <p>Built in public by Raihan Khan · @raihankhan_rk</p>
-            <span>DOM INDEX / 2026</span>
+            <button
+              className="fight-button"
+              onClick={() => startFight(selectedGame)}
+              type="button"
+            >
+              <span>FIGHT</span>
+              <i aria-hidden="true">↗</i>
+            </button>
           </div>
         </section>
       ) : (
@@ -773,47 +815,24 @@ export function Arena() {
             />
           </div>
 
-          <div className="arena-rules">
-            <div>
-              <span className="rule-number">01</span>
-              <p>
-                <b>Identical fixture</b>
-                Shared seed, separate browser state.
-              </p>
-            </div>
-            <div>
-              <span className="rule-number">02</span>
-              <p>
-                <b>Bounded execution</b>
-                Timeout or invalid action becomes BLOCKED.
-              </p>
-            </div>
-            <div>
-              <span className="rule-number">03</span>
-              <p>
-                <b>Code verifies wins</b>
-                DONE never decides the match by itself.
-              </p>
-            </div>
-            <span className={`runtime-mode${demoMode ? " is-demo" : ""}`}>
-              <i />
-              {demoMode
-                ? "DEMO POLICY · ADD TYPESAFE_API_KEY FOR LIVE JEV"
-                : "DUAL AGENT RUNTIME"}
-            </span>
-          </div>
-
           {phase === "countdown" && (
             <div className="countdown-overlay" aria-live="assertive">
               <div>
-                <span>READY BOTH AGENTS</span>
+                <span>READY</span>
                 <strong>{countdown}</strong>
-                <p>Observe → choose → click</p>
               </div>
             </div>
           )}
         </section>
       )}
+
+      <footer className="site-footer">
+        <span>TypeSafe System One</span>
+        <a href="https://x.com/raihankhan_rk" rel="noreferrer" target="_blank">
+          Built by <XIcon /> <b>@raihankhan_rk</b>
+        </a>
+        <span aria-hidden="true" />
+      </footer>
     </main>
   );
 }
