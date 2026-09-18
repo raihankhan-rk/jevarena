@@ -1,0 +1,34 @@
+{
+  "name": "jevarena",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Two TypeSafe Jev agents duel in click-only browser games.",
+  "license": "MIT",
+  "author": "Raihan Khan",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/raihankhan-rk/jevarena.git"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start -p ${PORT:-3000}",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@typesafe-ai/sdk": "^0.6.0",
+    "next": "15.5.25",
+    "postcss": "^8.5.28",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.1",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "15.5.25",
+    "typescript": "^5.9.3"
+  }
+}
