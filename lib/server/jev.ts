@@ -1,6 +1,6 @@
 import "server-only";
 
-import { choice, TypeSafeClient } from "@typesafe-ai/sdk";
+import { choice, type EntryType, TypeSafeClient } from "@typesafe-ai/sdk";
 
 import type {
   AgentDecision,
@@ -184,16 +184,40 @@ export async function chooseArenaAction(
       },
       targetCriteria,
     );
+    const state: EntryType = {
+      agent: request.agent,
+      page: {
+        url: request.page.url,
+        title: request.page.title,
+        visible_text: request.page.visibleText,
+      },
+      elements: request.elements.map((element) => ({
+        id: element.id,
+        index: element.index,
+        role: element.role,
+        label: element.label,
+        state: element.state,
+      })),
+      browser_memory: {
+        active_element_id: request.memory.activeElementId ?? null,
+        revealed_cards: (request.memory.revealedCards ?? []).map((card) => ({
+          id: card.id,
+          symbol: card.symbol,
+        })),
+        seen_cards: { ...(request.memory.seenCards ?? {}) },
+        goals_complete: request.memory.goalsComplete ?? false,
+      },
+      recent_actions: request.history.map((item) => ({
+        step: item.step,
+        operation: item.operation,
+        target_id: item.targetId,
+        outcome: item.outcome,
+      })),
+    };
     const result = await client.systemOne(
       {
         model: "jev-latest",
-        state: {
-          agent: request.agent,
-          page: request.page,
-          elements: request.elements,
-          browser_memory: request.memory,
-          recent_actions: request.history,
-        },
+        state,
         questions: { operation, click_target: clickTarget },
       },
       {

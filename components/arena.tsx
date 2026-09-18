@@ -225,7 +225,7 @@ export function Arena() {
 
       decisions.forEach((decision, index) => {
         const player = currentPlayers[index];
-        if (!decision || player.status === "blocked") return;
+        if (!decision) return;
 
         if (decision.operation === "CLICK" && decision.targetId) {
           const element = document.getElementById(
@@ -266,7 +266,7 @@ export function Arena() {
           source: decision.source,
         };
         player.history.push(trace);
-        if (player.status !== "blocked") player.status = "ready";
+        if (decision.operation !== "BLOCKED") player.status = "ready";
       });
       publish(currentPlayers);
     },
