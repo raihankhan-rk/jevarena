@@ -188,7 +188,7 @@ function raceHasWinner(state: SharedRaceState) {
 
 export function Arena() {
   const [selectedGame, setSelectedGame] =
-    useState<GameId>("treasure-hunt");
+    useState<GameId>("spot-race");
   const [view, setView] = useState<"landing" | "fight">("landing");
   const [phase, setPhase] = useState<
     "idle" | "countdown" | "running" | "finished"
@@ -201,7 +201,7 @@ export function Arena() {
     createPlayer("jev-b"),
   ]);
   const [race, setRace] = useState<SharedRaceState>(() =>
-    createSharedRace("treasure-hunt", `${BASE_SEED}:0`),
+    createSharedRace("spot-race", `${BASE_SEED}:0`),
   );
 
   const controllerRef = useRef<AbortController | null>(null);
