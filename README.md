@@ -61,6 +61,28 @@ iframe transport later without changing the Jev request contract.
 - Each browser uses an independent deterministic food seed.
 - Rematch aborts both old loops and opens fresh browser instances.
 
+## Anonymous fight counter
+
+When both iframe browsers are ready and a match is about to start, JevArena
+calls `POST /api/fights`. The endpoint atomically increments a local JSON file
+and writes one Railway log line:
+
+```text
+fight_click total=42 persistence=volume
+```
+
+There is no identity, tracking cookie, UTM capture, or analytics SDK.
+
+- `GET /api/fights` returns the current count and persistence mode.
+- [`/stats`](http://localhost:3000/stats) shows **Fights started: N**.
+- `/data/fights.json` is preferred when `/data` is writable.
+- `/tmp/jevarena/fights.json` is the automatic non-durable fallback.
+
+For durable production counts, open the Railway project, select the
+`jevarena` service, add a Volume, and mount it at `/data`. Redeploy once; the
+stats page will then show that durable Volume storage is active. No database
+or paid data service is required.
+
 ## Run locally
 
 Requires Node.js 20 or newer.
@@ -103,18 +125,22 @@ npm run build
 The included multi-stage `Dockerfile` emits Next.js standalone output,
 respects `PORT`, and serves `/` with HTTP 200. The iframe driver does not need
 Chromium packages. Connect the repository, set `TYPESAFE_API_KEY`, and deploy
-from `main`.
+from `main`. Mount a Railway Volume at `/data` if the fight count must survive
+deploys and restarts.
 
 ## Project map
 
 ```text
 app/play/snake/page.tsx       independent Snake browser route
 app/api/agent/step/route.ts   validated server-only Jev endpoint
+app/api/fights/route.ts       anonymous file-backed counter API
+app/stats/page.tsx            private-by-URL count display
 components/snake-game.tsx     canvas game + indexed DOM controls
 components/agent-pane.tsx     browser chrome, iframe, and telemetry
 components/arena.tsx          match clock and two independent agent loops
 lib/snake/engine.ts           deterministic Snake simulation
 lib/arena/games.ts            board observation and action-space builder
+lib/server/fight-counter.ts   atomic /data counter with /tmp fallback
 lib/server/jev.ts             @typesafe-ai/sdk operation/direction policy
 ```
 

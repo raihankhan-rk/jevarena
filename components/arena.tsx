@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { AgentPane } from "@/components/agent-pane";
+import { AgentAvatar } from "@/components/agent-avatar";
 import { buildAgentRequest, createPlayer } from "@/lib/arena/games";
 import type {
   AgentDecision,
@@ -307,6 +308,15 @@ export function Arena() {
         setCountdown(count);
         await sleep(600, signal);
       }
+      try {
+        await fetch("/api/fights", {
+          method: "POST",
+          cache: "no-store",
+          signal,
+        });
+      } catch {
+        if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+      }
       runningRef.current = true;
       setPhase("running");
       const deadline = Date.now() + MATCH_DURATION_MS;
@@ -436,14 +446,82 @@ export function Arena() {
 
       {view === "landing" ? (
         <section className="snake-landing">
-          <h1>Jev fights Jev</h1>
-          <div className="snake-start-card">
-            <span>ONE GAME · TWO BROWSERS</span>
-            <h2>Snake</h2>
-            <p>Stay alive. Eat food. Highest score wins.</p>
-            <button onClick={startFight} type="button">
-              FIGHT <b>↗</b>
+          <div className="snake-hero-copy">
+            <span className="snake-hero-kicker">
+              LIVE · DUAL BROWSER SPECTACLE
+            </span>
+            <h1>JevArena</h1>
+            <p>
+              Jev fights Jev in parallel universe.
+              <br />
+              Sixty seconds of live Snake.
+            </p>
+            <button
+              className="snake-hero-fight"
+              onClick={startFight}
+              type="button"
+            >
+              <span>FIGHT</span>
+              <small>START 60s MATCH</small>
+              <b>↗</b>
             </button>
+          </div>
+
+          <div className="snake-hero-preview" aria-hidden="true">
+            <div className="preview-browser preview-browser-a">
+              <div className="preview-chrome">
+                <span>
+                  <i />
+                  <i />
+                  <i />
+                </span>
+                <em>arena.local/snake/a</em>
+              </div>
+              <div className="preview-agent">
+                <AgentAvatar agentId="jev-a" size="small" />
+                <strong>Jev</strong>
+                <b>04</b>
+              </div>
+              <div className="preview-board">
+                <i className="preview-food food-a" />
+                <span className="preview-snake snake-a">
+                  <i />
+                  <i />
+                  <i />
+                  <i />
+                  <i />
+                </span>
+              </div>
+            </div>
+
+            <span className="preview-vs">VS</span>
+
+            <div className="preview-browser preview-browser-b">
+              <div className="preview-chrome">
+                <span>
+                  <i />
+                  <i />
+                  <i />
+                </span>
+                <em>arena.local/snake/b</em>
+              </div>
+              <div className="preview-agent">
+                <AgentAvatar agentId="jev-b" size="small" />
+                <strong>Jev in parallel universe</strong>
+                <b>06</b>
+              </div>
+              <div className="preview-board">
+                <i className="preview-food food-b" />
+                <span className="preview-snake snake-b">
+                  <i />
+                  <i />
+                  <i />
+                  <i />
+                  <i />
+                  <i />
+                </span>
+              </div>
+            </div>
           </div>
         </section>
       ) : (
@@ -497,7 +575,9 @@ export function Arena() {
         <a href="https://x.com/raihankhan_rk" rel="noreferrer" target="_blank">
           Built by <XIcon /> <b>@raihankhan_rk</b>
         </a>
-        <span aria-hidden="true" />
+        <a className="stats-link" href="/stats">
+          stats
+        </a>
       </footer>
     </main>
   );
