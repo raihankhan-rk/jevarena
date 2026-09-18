@@ -180,8 +180,8 @@ export function buildAgentRequest(
       revealedCells: [...state.revealed],
       claimedCells: claimedCells(state, players),
       scores: {
-        [first.name]: state.scores[first.id],
-        [second.name]: state.scores[second.id],
+        Jev: state.scores["jev-a"],
+        "Jev in parallel universe": state.scores["jev-b"],
       },
       treasuresFound:
         state.game === "treasure-hunt" ? state.scores[player.id] : undefined,
