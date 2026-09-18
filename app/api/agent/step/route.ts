@@ -13,9 +13,8 @@ function isAgentStepRequest(value: unknown): value is AgentStepRequest {
   return (
     (request.agent === "Jev" ||
       request.agent === "Jev in parallel universe") &&
-    (request.game === "memory-match" ||
-      request.game === "2048" ||
-      request.game === "treasure-hunt") &&
+    (request.game === "treasure-hunt" ||
+      request.game === "claim-race") &&
     typeof request.goal === "string" &&
     !!request.page &&
     typeof request.page.visibleText === "string" &&

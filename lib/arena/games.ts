@@ -1,11 +1,10 @@
 import type {
   AgentStepRequest,
-  Direction,
   ElementObservation,
-  Game2048State,
   GameId,
-  MemoryState,
+  PlayerId,
   PlayerRun,
+  SharedRaceState,
 } from "./types";
 
 export const GAME_COPY: Record<
@@ -13,43 +12,19 @@ export const GAME_COPY: Record<
   {
     label: string;
     eyebrow: string;
-    description: string;
     rule: string;
-    duration: string;
   }
 > = {
-  "memory-match": {
-    label: "Memory Match",
-    eyebrow: "Recall trial",
-    description: "Remember every reveal and clear six pairs.",
-    rule: "Same shuffled deck · first clear wins",
-    duration: "≈ 35 sec",
-  },
-  "2048": {
-    label: "2048",
-    eyebrow: "Strategy trial",
-    description: "Merge tiles with four indexed direction buttons.",
-    rule: "24 moves · highest score wins",
-    duration: "≈ 30 sec",
-  },
   "treasure-hunt": {
     label: "Treasure Hunt",
-    eyebrow: "Search trial",
-    description: "Reveal the grid and find three hidden treasures.",
-    rule: "First to find all 3 treasures wins",
-    duration: "≈ 30 sec",
+    eyebrow: "Hidden race",
+    rule: "One shared grid · first to 3 of 5 treasures wins",
   },
-};
-
-const MEMORY_SYMBOLS = ["Comet", "Bolt", "Crown", "Flame", "Gem", "Orbit"];
-
-export const MEMORY_GLYPHS: Record<string, string> = {
-  Comet: "✦",
-  Bolt: "ϟ",
-  Crown: "♛",
-  Flame: "◒",
-  Gem: "◆",
-  Orbit: "◎",
+  "claim-race": {
+    label: "Claim Race",
+    eyebrow: "Grid race",
+    rule: "One shared grid · most cells after every claim wins",
+  },
 };
 
 function hashSeed(value: string) {
@@ -70,26 +45,7 @@ function mulberry32(seed: number) {
   };
 }
 
-export function createMemoryDeck(seed: string) {
-  const random = mulberry32(hashSeed(seed));
-  const deck = [...MEMORY_SYMBOLS, ...MEMORY_SYMBOLS];
-
-  for (let index = deck.length - 1; index > 0; index -= 1) {
-    const swapIndex = Math.floor(random() * (index + 1));
-    [deck[index], deck[swapIndex]] = [deck[swapIndex], deck[index]];
-  }
-
-  return deck;
-}
-
-export function create2048Board(seed: string) {
-  let board = Array<number>(16).fill(0);
-  board = add2048Tile(board, seed, 0);
-  board = add2048Tile(board, seed, 1);
-  return board;
-}
-
-export function createTreasureCells(seed: string, count = 3) {
+export function createTreasureCells(seed: string, count = 5) {
   const random = mulberry32(hashSeed(`${seed}:treasures`));
   const cells = Array.from({ length: 25 }, (_, index) => index);
   for (let index = cells.length - 1; index > 0; index -= 1) {
@@ -99,237 +55,141 @@ export function createTreasureCells(seed: string, count = 3) {
   return cells.slice(0, count).sort((first, second) => first - second);
 }
 
-function lineIndices(direction: Direction, line: number) {
-  if (direction === "left") return [0, 1, 2, 3].map((col) => line * 4 + col);
-  if (direction === "right") return [3, 2, 1, 0].map((col) => line * 4 + col);
-  if (direction === "up") return [0, 1, 2, 3].map((row) => row * 4 + line);
-  return [3, 2, 1, 0].map((row) => row * 4 + line);
-}
-
-export function move2048(board: number[], direction: Direction) {
-  const next = [...board];
-  let scoreGain = 0;
-
-  for (let line = 0; line < 4; line += 1) {
-    const indices = lineIndices(direction, line);
-    const values = indices.map((index) => board[index]).filter(Boolean);
-    const merged: number[] = [];
-    for (let index = 0; index < values.length; index += 1) {
-      if (values[index] === values[index + 1]) {
-        const value = values[index] * 2;
-        merged.push(value);
-        scoreGain += value;
-        index += 1;
-      } else {
-        merged.push(values[index]);
-      }
-    }
-    const lineValues = [...merged, ...Array(4 - merged.length).fill(0)];
-    indices.forEach((index, offset) => {
-      next[index] = lineValues[offset];
-    });
-  }
-
-  return {
-    board: next,
-    scoreGain,
-    changed: next.some((value, index) => value !== board[index]),
-  };
-}
-
-export function add2048Tile(board: number[], seed: string, cursor: number) {
-  const empty = board.flatMap((value, index) => (value === 0 ? [index] : []));
-  if (!empty.length) return [...board];
-  const random = mulberry32(hashSeed(`${seed}:spawn:${cursor}`));
-  const index = empty[Math.floor(random() * empty.length)];
-  const next = [...board];
-  next[index] = random() < 0.9 ? 2 : 4;
-  return next;
-}
-
-export function available2048Directions(board: number[]) {
-  return (["up", "down", "left", "right"] as Direction[]).filter(
-    (direction) => move2048(board, direction).changed,
-  );
-}
-
-export function createPlayer(
-  id: PlayerRun["id"],
-  seed: string,
-): PlayerRun {
+export function createPlayer(id: PlayerId): PlayerRun {
   return {
     id,
     name: id === "jev-a" ? "Jev" : "Jev in parallel universe",
     status: "ready",
-    memory: {
-      deck: createMemoryDeck(seed),
-      revealed: [],
-      matched: [],
-      seen: {},
-      moves: 0,
-      flips: 0,
-    },
-    game2048: {
-      board: create2048Board(seed),
-      score: 0,
-      steps: 0,
-      spawnCursor: 2,
-      lastMoved: null,
-    },
-    treasure: {
-      treasures: createTreasureCells(seed),
-      revealed: [],
-      found: 0,
-      clicks: 0,
-      lastCell: null,
-    },
     history: [],
     latestDecision: null,
     pendingOutcome: "",
   };
 }
 
-export function memoryElements(state: MemoryState) {
-  return state.deck.flatMap((symbol, index): ElementObservation[] => {
-    if (state.matched.includes(index) || state.revealed.includes(index)) return [];
-    return [
-      {
-        id: `card-${index + 1}`,
-        index: index + 1,
-        role: "button",
-        label: `Card ${index + 1}: face down`,
-        state: "face-down",
-      },
-    ];
-  });
+export function createSharedRace(game: GameId, seed: string): SharedRaceState {
+  return {
+    game,
+    seed,
+    round: 0,
+    treasures: game === "treasure-hunt" ? createTreasureCells(seed) : [],
+    revealed: [],
+    treasureOwners: {},
+    claimOwners: Array<PlayerId | null>(25).fill(null),
+    scores: { "jev-a": 0, "jev-b": 0 },
+    attempts: { "jev-a": 0, "jev-b": 0 },
+    lastCell: null,
+    collisionCell: null,
+  };
 }
 
-export function game2048Elements(state: Game2048State) {
-  const available = new Set(available2048Directions(state.board));
-  const labels: Record<Direction, string> = {
-    up: "Move tiles up ↑",
-    down: "Move tiles down ↓",
-    left: "Move tiles left ←",
-    right: "Move tiles right →",
-  };
-  return (["up", "down", "left", "right"] as Direction[]).map(
-    (direction, index): ElementObservation => ({
-      id: `move-${direction}`,
+export function availableCellIndices(state: SharedRaceState) {
+  if (state.game === "treasure-hunt") {
+    const revealed = new Set(state.revealed);
+    return Array.from({ length: 25 }, (_, index) => index).filter(
+      (index) => !revealed.has(index),
+    );
+  }
+  return state.claimOwners.flatMap((owner, index) =>
+    owner === null ? [index] : [],
+  );
+}
+
+export function raceElements(state: SharedRaceState) {
+  return availableCellIndices(state).map(
+    (index): ElementObservation => ({
+      id: `cell-${index + 1}`,
       index: index + 1,
       role: "button",
-      label: `${labels[direction]} — ${
-        available.has(direction) ? "available" : "no tiles would move"
-      }`,
-      state: available.has(direction) ? "available" : "revealed",
+      label:
+        state.game === "treasure-hunt"
+          ? `Unrevealed shared grid cell ${index + 1}`
+          : `Unclaimed shared grid cell ${index + 1}, worth one point`,
+      state: state.game === "treasure-hunt" ? "hidden" : "available",
     }),
   );
 }
 
-export function treasureElements(state: PlayerRun["treasure"]) {
-  return Array.from({ length: 25 }, (_, index) => index).flatMap(
-    (index): ElementObservation[] =>
-      state.revealed.includes(index)
-        ? []
-        : [
-            {
-              id: `cell-${index + 1}`,
-              index: index + 1,
-              role: "button",
-              label: `Hidden grid cell ${index + 1}`,
-              state: "hidden",
-            },
-          ],
+function claimedCells(state: SharedRaceState, players: PlayerRun[]) {
+  if (state.game === "treasure-hunt") {
+    return Object.fromEntries(
+      Object.entries(state.treasureOwners).map(([cell, owner]) => [
+        `cell-${Number(cell) + 1}`,
+        players.find((player) => player.id === owner)?.name ?? "Jev",
+      ]),
+    );
+  }
+  return Object.fromEntries(
+    state.claimOwners.flatMap((owner, index) =>
+      owner
+        ? [
+            [
+              `cell-${index + 1}`,
+              players.find((player) => player.id === owner)?.name ?? "Jev",
+            ],
+          ]
+        : [],
+    ),
   );
 }
 
 export function buildAgentRequest(
-  game: GameId,
+  state: SharedRaceState,
   player: PlayerRun,
+  players: PlayerRun[],
 ): AgentStepRequest {
-  const elements =
-    game === "memory-match"
-      ? memoryElements(player.memory)
-      : game === "2048"
-        ? game2048Elements(player.game2048)
-        : treasureElements(player.treasure);
-  const revealedCards = player.memory.revealed.map((index) => ({
-    id: `card-${index + 1}`,
-    symbol: player.memory.deck[index],
-  }));
+  const elements = raceElements(state);
+  const first = players[0];
+  const second = players[1];
+  const scoreText = `${first.name}: ${state.scores[first.id]}, ${second.name}: ${
+    state.scores[second.id]
+  }`;
   const visibleText =
-    game === "memory-match"
+    state.game === "treasure-hunt"
       ? [
-          "Memory Match arena.",
-          `${player.memory.matched.length / 2} of 6 pairs matched.`,
-          `Matched card IDs: ${
-            player.memory.matched.map((index) => `card-${index + 1}`).join(", ") ||
-            "none"
-          }.`,
-          revealedCards.length
-            ? `Currently face-up: ${revealedCards
-                .map((card) => `${card.id} shows ${card.symbol}`)
-                .join(", ")}.`
-            : "No cards are currently face-up.",
-          `Previously seen symbols: ${
-            Object.entries(player.memory.seen)
-              .map(([id, symbol]) => `${id}=${symbol}`)
-              .join(", ") || "none"
-          }.`,
+          "Shared Treasure Hunt board.",
+          `${state.revealed.length} of 25 cells are revealed.`,
+          `${scoreText} treasures.`,
+          `Revealed empty cells: ${state.revealed
+            .filter((cell) => !state.treasures.includes(cell))
+            .map((cell) => cell + 1)
+            .join(", ") || "none"}.`,
+          "Treasure positions in unrevealed cells are unknown.",
         ].join(" ")
-      : game === "2048"
-        ? `2048 board, row major: ${player.game2048.board.join(", ")}. Score ${
-            player.game2048.score
-          }. ${24 - player.game2048.steps} moves remain.`
-        : `Treasure Hunt grid. Revealed cells: ${
-            player.treasure.revealed.join(", ") || "none"
-          }. ${player.treasure.found} of 3 treasures found.`;
-
-  const goals: Record<GameId, string> = {
-    "memory-match":
-      "Keep clicking available face-down cards until all six pairs are matched. If one card is face-up, click its known matching symbol when available; otherwise reveal an unseen card. Never stop after one pair attempt.",
-    "2048":
-      "Use one direction button to maximize 2048 merge score within 24 moves. Prefer moves that merge tiles and preserve space.",
-    "treasure-hunt":
-      "Reveal hidden grid cells and find all three treasures in as few clicks as possible.",
-  };
-
-  const memory =
-    game === "memory-match"
-      ? {
-          revealedCards,
-          seenCards: { ...player.memory.seen },
-          goalsComplete:
-            player.memory.matched.length === player.memory.deck.length,
-        }
-      : game === "2048"
-        ? {
-            board: [...player.game2048.board],
-            availableDirections: available2048Directions(
-              player.game2048.board,
-            ),
-            score: player.game2048.score,
-            movesRemaining: 24 - player.game2048.steps,
-            goalsComplete:
-              player.game2048.steps >= 24 ||
-              Math.max(...player.game2048.board) >= 2048,
-          }
-        : {
-            revealedCells: [...player.treasure.revealed],
-            treasuresFound: player.treasure.found,
-            goalsComplete: player.treasure.found >= 3,
-          };
+      : [
+          "Shared Claim Race board.",
+          `${state.claimOwners.filter(Boolean).length} of 25 cells are claimed.`,
+          `${scoreText} cells.`,
+          "Every unclaimed cell is worth one point.",
+        ].join(" ");
 
   return {
     agent: player.name,
-    game,
-    goal: goals[game],
+    game: state.game,
+    goal:
+      state.game === "treasure-hunt"
+        ? "Race the other Jev to find a majority: click one unrevealed shared cell. Keep exploring; hidden cells are actionable."
+        : "Claim one currently unclaimed shared cell before the other Jev. Every offered cell is worth one point.",
     page: {
-      url: `/fixtures/${game}?player=${player.id}`,
-      title: GAME_COPY[game].label,
+      url: `/fixtures/${state.game}?world=shared`,
+      title: GAME_COPY[state.game].label,
       visibleText,
     },
     elements,
-    memory,
+    memory: {
+      round: state.round,
+      revealedCells: [...state.revealed],
+      claimedCells: claimedCells(state, players),
+      scores: {
+        [first.name]: state.scores[first.id],
+        [second.name]: state.scores[second.id],
+      },
+      treasuresFound:
+        state.game === "treasure-hunt" ? state.scores[player.id] : undefined,
+      goalsComplete:
+        state.game === "treasure-hunt"
+          ? state.scores[player.id] >= 3
+          : elements.length === 0,
+    },
     history: player.history.slice(-10).map((item) => ({
       step: item.step,
       operation: item.operation,

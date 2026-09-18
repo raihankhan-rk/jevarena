@@ -1,34 +1,21 @@
-export type GameId =
-  | "memory-match"
-  | "2048"
-  | "treasure-hunt";
+export type GameId = "treasure-hunt" | "claim-race";
 export type PlayerId = "jev-a" | "jev-b";
 export type PlayerName = "Jev" | "Jev in parallel universe";
-export type Direction = "up" | "down" | "left" | "right";
-export type AgentOperation =
-  | "CLICK"
-  | "SCROLL"
-  | "WAIT"
-  | "DONE"
-  | "BLOCKED";
+export type AgentOperation = "CLICK" | "BLOCKED";
 
 export interface ElementObservation {
   id: string;
   index: number;
   role: "button";
   label: string;
-  state: "active" | "face-down" | "revealed" | "available" | "hidden";
+  state: "hidden" | "available";
 }
 
 export interface AgentMemory {
-  activeElementId?: string;
-  revealedCards?: Array<{ id: string; symbol: string }>;
-  seenCards?: Record<string, string>;
-  board?: number[];
-  availableDirections?: Direction[];
-  score?: number;
-  movesRemaining?: number;
-  revealedCells?: number[];
+  round: number;
+  revealedCells: number[];
+  claimedCells: Record<string, PlayerName>;
+  scores: Record<PlayerName, number>;
   treasuresFound?: number;
   goalsComplete?: boolean;
 }
@@ -77,41 +64,27 @@ export interface StepTrace extends AgentHistoryItem {
   source: "jev" | "demo";
 }
 
-export interface MemoryState {
-  deck: string[];
-  revealed: number[];
-  matched: number[];
-  seen: Record<string, string>;
-  moves: number;
-  flips: number;
-}
-
-export interface Game2048State {
-  board: number[];
-  score: number;
-  steps: number;
-  spawnCursor: number;
-  lastMoved: Direction | null;
-}
-
-export interface TreasureState {
-  treasures: number[];
-  revealed: number[];
-  found: number;
-  clicks: number;
-  lastCell: number | null;
-}
-
 export interface PlayerRun {
   id: PlayerId;
   name: PlayerName;
   status: "ready" | "thinking" | "acting" | "done" | "blocked";
-  memory: MemoryState;
-  game2048: Game2048State;
-  treasure: TreasureState;
   history: StepTrace[];
   latestDecision: AgentDecision | null;
   pendingOutcome: string;
+}
+
+export interface SharedRaceState {
+  game: GameId;
+  seed: string;
+  round: number;
+  treasures: number[];
+  revealed: number[];
+  treasureOwners: Partial<Record<number, PlayerId>>;
+  claimOwners: Array<PlayerId | null>;
+  scores: Record<PlayerId, number>;
+  attempts: Record<PlayerId, number>;
+  lastCell: number | null;
+  collisionCell: number | null;
 }
 
 export interface MatchResult {

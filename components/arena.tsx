@@ -3,30 +3,32 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { AgentPane } from "@/components/agent-pane";
+import { SharedGameFixture } from "@/components/game-fixtures";
 import {
-  add2048Tile,
   buildAgentRequest,
   createPlayer,
+  createSharedRace,
   GAME_COPY,
-  move2048,
 } from "@/lib/arena/games";
 import type {
   AgentDecision,
-  Direction,
   GameId,
   MatchResult,
   PlayerId,
   PlayerRun,
+  SharedRaceState,
   StepTrace,
 } from "@/lib/arena/types";
 
-const MATCH_SEED = "jevarena-public-demo-v2";
-const MEMORY_STEP_LIMIT = 42;
-const MEMORY_TIMEOUT_MS = 75_000;
-const GAME_2048_STEPS = 24;
-const TREASURE_STEP_LIMIT = 25;
+const BASE_SEED = "jevarena-shared-race";
+const MAX_ROUNDS = 30;
+const GAME_ORDER: GameId[] = ["treasure-hunt", "claim-race"];
 
-const GAME_ORDER: GameId[] = ["memory-match", "2048", "treasure-hunt"];
+interface CompletedDecision {
+  playerId: PlayerId;
+  decision: AgentDecision;
+  completedAt: number;
+}
 
 function sleep(ms: number, signal: AbortSignal) {
   return new Promise<void>((resolve, reject) => {
@@ -49,22 +51,6 @@ function sleep(ms: number, signal: AbortSignal) {
 function clonePlayer(player: PlayerRun): PlayerRun {
   return {
     ...player,
-    memory: {
-      ...player.memory,
-      deck: [...player.memory.deck],
-      revealed: [...player.memory.revealed],
-      matched: [...player.memory.matched],
-      seen: { ...player.memory.seen },
-    },
-    game2048: {
-      ...player.game2048,
-      board: [...player.game2048.board],
-    },
-    treasure: {
-      ...player.treasure,
-      treasures: [...player.treasure.treasures],
-      revealed: [...player.treasure.revealed],
-    },
     history: [...player.history],
     latestDecision: player.latestDecision
       ? {
@@ -82,7 +68,19 @@ function clonePlayers(players: PlayerRun[]) {
   return players.map(clonePlayer) as [PlayerRun, PlayerRun];
 }
 
-function blockedClientDecision(reason: string): AgentDecision {
+function cloneRace(state: SharedRaceState): SharedRaceState {
+  return {
+    ...state,
+    treasures: [...state.treasures],
+    revealed: [...state.revealed],
+    treasureOwners: { ...state.treasureOwners },
+    claimOwners: [...state.claimOwners],
+    scores: { ...state.scores },
+    attempts: { ...state.attempts },
+  };
+}
+
+function blockedDecision(reason: string): AgentDecision {
   return {
     operation: "BLOCKED",
     targetId: null,
@@ -98,28 +96,37 @@ function blockedClientDecision(reason: string): AgentDecision {
 }
 
 async function requestDecision(
-  game: GameId,
+  state: SharedRaceState,
   player: PlayerRun,
+  players: PlayerRun[],
   signal: AbortSignal,
-) {
+): Promise<CompletedDecision> {
   const startedAt = performance.now();
   try {
     const response = await fetch("/api/agent/step", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(buildAgentRequest(game, player)),
+      body: JSON.stringify(buildAgentRequest(state, player, players)),
       cache: "no-store",
       signal,
     });
-    if (!response.ok) {
-      return blockedClientDecision("Invalid browser snapshot; player BLOCKED.");
-    }
-    return (await response.json()) as AgentDecision;
+    const decision = response.ok
+      ? ((await response.json()) as AgentDecision)
+      : blockedDecision("Invalid shared-board snapshot; player BLOCKED.");
+    return {
+      playerId: player.id,
+      decision,
+      completedAt: performance.now(),
+    };
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") throw error;
     return {
-      ...blockedClientDecision("Agent request failed; player BLOCKED."),
-      latencyMs: Math.round(performance.now() - startedAt),
+      playerId: player.id,
+      decision: {
+        ...blockedDecision("Agent request failed; player BLOCKED."),
+        latencyMs: Math.round(performance.now() - startedAt),
+      },
+      completedAt: performance.now(),
     };
   }
 }
@@ -155,22 +162,22 @@ function BrandMark() {
   );
 }
 
-function isComplete(game: GameId, player: PlayerRun) {
-  if (game === "memory-match") {
-    return player.memory.matched.length === player.memory.deck.length;
-  }
-  if (game === "2048") {
-    return (
-      player.game2048.steps >= GAME_2048_STEPS ||
-      Math.max(...player.game2048.board) >= 2048
-    );
-  }
-  return player.treasure.found >= player.treasure.treasures.length;
+function availableCount(state: SharedRaceState) {
+  return state.game === "treasure-hunt"
+    ? 25 - state.revealed.length
+    : state.claimOwners.filter((owner) => owner === null).length;
+}
+
+function raceHasWinner(state: SharedRaceState) {
+  return (
+    state.game === "treasure-hunt" &&
+    (state.scores["jev-a"] >= 3 || state.scores["jev-b"] >= 3)
+  );
 }
 
 export function Arena() {
-  const [selectedGame, setSelectedGame] = useState<GameId>("memory-match");
-  const [activeGame, setActiveGame] = useState<GameId>("memory-match");
+  const [selectedGame, setSelectedGame] =
+    useState<GameId>("treasure-hunt");
   const [view, setView] = useState<"landing" | "fight">("landing");
   const [phase, setPhase] = useState<
     "idle" | "countdown" | "running" | "finished"
@@ -179,176 +186,230 @@ export function Arena() {
   const [timeLeft, setTimeLeft] = useState(0);
   const [result, setResult] = useState<MatchResult | null>(null);
   const [players, setPlayers] = useState<[PlayerRun, PlayerRun]>(() => [
-    createPlayer("jev-a", MATCH_SEED),
-    createPlayer("jev-b", MATCH_SEED),
+    createPlayer("jev-a"),
+    createPlayer("jev-b"),
   ]);
+  const [race, setRace] = useState<SharedRaceState>(() =>
+    createSharedRace("treasure-hunt", `${BASE_SEED}:0`),
+  );
 
   const controllerRef = useRef<AbortController | null>(null);
-  const runPlayersRef = useRef<PlayerRun[] | null>(null);
-  const activeGameRef = useRef<GameId>("memory-match");
+  const playersRef = useRef<PlayerRun[] | null>(null);
+  const raceRef = useRef<SharedRaceState | null>(null);
+  const executingPlayerRef = useRef<PlayerId | null>(null);
+  const matchNumberRef = useRef(0);
 
-  const publish = useCallback((next: PlayerRun[]) => {
-    setPlayers(clonePlayers(next));
-  }, []);
-
-  const executeFixtureAction = useCallback(
-    (playerId: PlayerId, targetId: string) => {
-      const player = runPlayersRef.current?.find(
-        (candidate) => candidate.id === playerId,
-      );
-      if (!player || player.status === "blocked") return;
-
-      if (activeGameRef.current === "memory-match") {
-        const cardIndex = Number(targetId.split("-")[1]) - 1;
-        const memory = player.memory;
-        if (
-          !Number.isInteger(cardIndex) ||
-          memory.revealed.includes(cardIndex) ||
-          memory.matched.includes(cardIndex) ||
-          memory.revealed.length >= 2
-        ) {
-          player.pendingOutcome = `Rejected stale target ${targetId}`;
-          return;
-        }
-        memory.revealed.push(cardIndex);
-        memory.seen[targetId] = memory.deck[cardIndex];
-        memory.flips += 1;
-        if (memory.revealed.length === 2) memory.moves += 1;
-        player.pendingOutcome = `Clicked [${cardIndex + 1}] · revealed ${memory.deck[cardIndex]}`;
-        return;
-      }
-
-      if (activeGameRef.current === "2048") {
-        const direction = targetId.replace("move-", "") as Direction;
-        if (!["up", "down", "left", "right"].includes(direction)) {
-          player.pendingOutcome = `Rejected invalid direction ${targetId}`;
-          return;
-        }
-        const moved = move2048(player.game2048.board, direction);
-        player.game2048.steps += 1;
-        player.game2048.lastMoved = direction;
-        if (moved.changed) {
-          player.game2048.score += moved.scoreGain;
-          player.game2048.board = add2048Tile(
-            moved.board,
-            MATCH_SEED,
-            player.game2048.spawnCursor,
-          );
-          player.game2048.spawnCursor += 1;
-          player.pendingOutcome = `Moved ${direction.toUpperCase()} · +${moved.scoreGain} score`;
-        } else {
-          player.pendingOutcome = `Moved ${direction.toUpperCase()} · board unchanged`;
-        }
-        return;
-      }
-
-      const cellIndex = Number(targetId.split("-")[1]) - 1;
-      if (
-        !Number.isInteger(cellIndex) ||
-        player.treasure.revealed.includes(cellIndex)
-      ) {
-        player.pendingOutcome = `Rejected stale target ${targetId}`;
-        return;
-      }
-      player.treasure.revealed.push(cellIndex);
-      player.treasure.clicks += 1;
-      player.treasure.lastCell = cellIndex;
-      const foundTreasure = player.treasure.treasures.includes(cellIndex);
-      if (foundTreasure) player.treasure.found += 1;
-      player.pendingOutcome = foundTreasure
-        ? `Clicked [${cellIndex + 1}] · TREASURE FOUND`
-        : `Clicked [${cellIndex + 1}] · empty`;
+  const publish = useCallback(
+    (nextPlayers: PlayerRun[], nextRace: SharedRaceState) => {
+      setPlayers(clonePlayers(nextPlayers));
+      setRace(cloneRace(nextRace));
     },
     [],
   );
 
-  const executeDecisions = useCallback(
+  const claimCell = useCallback((targetId: string) => {
+    const state = raceRef.current;
+    const currentPlayers = playersRef.current;
+    const playerId = executingPlayerRef.current;
+    const player = currentPlayers?.find(
+      (candidate) => candidate.id === playerId,
+    );
+    if (!state || !player || !playerId) return;
+
+    const cell = Number(targetId.split("-")[1]) - 1;
+    state.attempts[playerId] += 1;
+    const unavailable =
+      state.game === "treasure-hunt"
+        ? state.revealed.includes(cell)
+        : state.claimOwners[cell] !== null;
+
+    if (!Number.isInteger(cell) || cell < 0 || cell >= 25 || unavailable) {
+      state.collisionCell = Number.isInteger(cell) ? cell : null;
+      const owner =
+        state.game === "claim-race" ? state.claimOwners[cell] : null;
+      player.pendingOutcome = owner
+        ? `[${cell + 1}] already claimed by ${
+            owner === "jev-a" ? "Jev" : "parallel Jev"
+          }`
+        : `[${cell + 1}] already revealed · claim lost`;
+      return;
+    }
+
+    state.lastCell = cell;
+    state.collisionCell = null;
+    if (state.game === "treasure-hunt") {
+      state.revealed.push(cell);
+      if (state.treasures.includes(cell)) {
+        state.treasureOwners[cell] = playerId;
+        state.scores[playerId] += 1;
+        player.pendingOutcome = `[${cell + 1}] TREASURE · claim won`;
+      } else {
+        player.pendingOutcome = `[${cell + 1}] empty · revealed first`;
+      }
+    } else {
+      state.claimOwners[cell] = playerId;
+      state.scores[playerId] += 1;
+      player.pendingOutcome = `[${cell + 1}] claimed · +1`;
+    }
+  }, []);
+
+  const addTrace = useCallback(
+    (player: PlayerRun, decision: AgentDecision) => {
+      const trace: StepTrace = {
+        step: player.history.length + 1,
+        operation: decision.operation,
+        targetId: decision.targetId,
+        outcome: player.pendingOutcome || "No claim executed",
+        operationProbabilities: decision.operationProbabilities,
+        targetProbabilities: decision.targetProbabilities,
+        confidence: decision.confidence,
+        targetConfidence: decision.targetConfidence,
+        latencyMs: decision.latencyMs,
+        model: decision.model,
+        source: decision.source,
+      };
+      player.history.push(trace);
+    },
+    [],
+  );
+
+  const applySerially = useCallback(
     async (
-      game: GameId,
+      completed: CompletedDecision[],
       currentPlayers: PlayerRun[],
-      decisions: Array<AgentDecision | null>,
+      state: SharedRaceState,
       signal: AbortSignal,
+      matchNumber: number,
     ) => {
-      decisions.forEach((decision, index) => {
-        const player = currentPlayers[index];
-        if (!decision || player.status === "blocked" || player.status === "done")
-          return;
+      completed.forEach(({ playerId, decision }) => {
+        const player = currentPlayers.find(
+          (candidate) => candidate.id === playerId,
+        );
+        if (!player) return;
         player.latestDecision = decision;
         player.pendingOutcome = "";
         player.status =
           decision.operation === "BLOCKED" ? "blocked" : "acting";
       });
-      publish(currentPlayers);
-      await sleep(110, signal);
+      publish(currentPlayers, state);
+      await sleep(90, signal);
 
-      decisions.forEach((decision, index) => {
-        const player = currentPlayers[index];
-        if (!decision || player.status === "done") return;
+      const preferredFirst: PlayerId =
+        (state.round + matchNumber) % 2 === 0 ? "jev-a" : "jev-b";
+      completed.sort((first, second) => {
+        const delta = first.completedAt - second.completedAt;
+        if (Math.abs(delta) > 4) return delta;
+        return first.playerId === preferredFirst ? -1 : 1;
+      });
 
-        if (decision.operation === "CLICK" && decision.targetId) {
+      for (const { playerId, decision } of completed) {
+        const player = currentPlayers.find(
+          (candidate) => candidate.id === playerId,
+        );
+        if (!player) continue;
+
+        if (raceHasWinner(state)) {
+          player.pendingOutcome = "Race ended before this claim acquired the lock";
+        } else if (decision.operation === "CLICK" && decision.targetId) {
+          executingPlayerRef.current = playerId;
           const element = document.getElementById(
-            `${player.id}-${decision.targetId}`,
+            `shared-${decision.targetId}`,
           ) as HTMLButtonElement | null;
-          if (element && !element.disabled) {
+          if (element) {
             element.click();
           } else {
-            player.pendingOutcome = `Target ${decision.targetId} went stale · no click`;
+            player.pendingOutcome = `${decision.targetId} left the shared action space`;
           }
-        } else if (decision.operation === "BLOCKED") {
-          player.pendingOutcome =
-            decision.blockedReason ?? "No supported action can progress";
+          executingPlayerRef.current = null;
         } else {
-          player.pendingOutcome = `${decision.operation} rejected · click required`;
+          player.pendingOutcome =
+            decision.blockedReason ?? "No shared-board claim available";
         }
 
-        const trace: StepTrace = {
-          step: player.history.length + 1,
-          operation: decision.operation,
-          targetId: decision.targetId,
-          outcome: player.pendingOutcome || "No action executed",
-          operationProbabilities: decision.operationProbabilities,
-          targetProbabilities: decision.targetProbabilities,
-          confidence: decision.confidence,
-          targetConfidence: decision.targetConfidence,
-          latencyMs: decision.latencyMs,
-          model: decision.model,
-          source: decision.source,
-        };
-        player.history.push(trace);
+        addTrace(player, decision);
         if (decision.operation !== "BLOCKED") player.status = "ready";
-      });
-      publish(currentPlayers);
+      }
+
+      state.round += 1;
+      publish(currentPlayers, state);
     },
-    [publish],
+    [addTrace, publish],
   );
 
-  const getDecisions = useCallback(
-    async (game: GameId, currentPlayers: PlayerRun[], signal: AbortSignal) => {
+  const getParallelDecisions = useCallback(
+    async (
+      currentPlayers: PlayerRun[],
+      state: SharedRaceState,
+      signal: AbortSignal,
+    ) => {
       currentPlayers.forEach((player) => {
-        if (isComplete(game, player)) {
-          player.status = "done";
-        } else if (player.status !== "blocked") {
-          player.status = "thinking";
-        }
+        if (player.status !== "blocked") player.status = "thinking";
       });
-      publish(currentPlayers);
+      publish(currentPlayers, state);
       return Promise.all(
         currentPlayers.map((player) =>
-          player.status === "blocked" || player.status === "done"
-            ? Promise.resolve(null)
-            : requestDecision(game, player, signal),
+          player.status === "blocked"
+            ? Promise.resolve({
+                playerId: player.id,
+                decision: blockedDecision("Player already BLOCKED."),
+                completedAt: Number.POSITIVE_INFINITY,
+              })
+            : requestDecision(state, player, currentPlayers, signal),
         ),
       );
     },
     [publish],
   );
 
+  const resolveResult = useCallback(
+    (state: SharedRaceState, currentPlayers: PlayerRun[]): MatchResult => {
+      const [first, second] = currentPlayers;
+      if (first.status === "blocked" && second.status === "blocked") {
+        return {
+          winner: "draw",
+          label: "Double BLOCKED",
+          detail: "Neither Jev returned another valid claim.",
+        };
+      }
+      if (first.status === "blocked" || second.status === "blocked") {
+        const winner = first.status === "blocked" ? second : first;
+        return {
+          winner: winner.id,
+          label: `${winner.name} wins`,
+          detail: "Opponent BLOCKED during the shared race.",
+        };
+      }
+      if (state.scores[first.id] !== state.scores[second.id]) {
+        const winner =
+          state.scores[first.id] > state.scores[second.id] ? first : second;
+        return {
+          winner: winner.id,
+          label:
+            state.game === "treasure-hunt"
+              ? `${winner.name} found the majority`
+              : `${winner.name} claimed the grid`,
+          detail: `${state.scores[first.id]}–${state.scores[second.id]} · first claim wins.`,
+        };
+      }
+      return {
+        winner: "draw",
+        label: "Dead heat",
+        detail: `${state.scores[first.id]} claims each after ${state.round} rounds.`,
+      };
+    },
+    [],
+  );
+
   const finishMatch = useCallback(
-    (currentPlayers: PlayerRun[], matchResult: MatchResult) => {
+    (
+      currentPlayers: PlayerRun[],
+      state: SharedRaceState,
+      matchResult: MatchResult,
+    ) => {
       currentPlayers.forEach((player) => {
         if (player.status !== "blocked") player.status = "done";
       });
-      publish(currentPlayers);
+      publish(currentPlayers, state);
       setResult(matchResult);
       setPhase("finished");
       setTimeLeft(0);
@@ -356,269 +417,46 @@ export function Arena() {
     [publish],
   );
 
-  const blockedResult = useCallback((currentPlayers: PlayerRun[]) => {
-    const [first, second] = currentPlayers;
-    if (first.status === "blocked" && second.status === "blocked") {
-      return {
-        winner: "draw" as const,
-        label: "Double BLOCKED",
-        detail: "Neither Jev returned another valid click.",
-      };
-    }
-    if (first.status === "blocked" || second.status === "blocked") {
-      const winner = first.status === "blocked" ? second : first;
-      return {
-        winner: winner.id,
-        label: `${winner.name} wins`,
-        detail: "Opponent BLOCKED before the game ended.",
-      };
-    }
-    return null;
-  }, []);
-
-  const resolveMemoryPairs = useCallback(
-    async (currentPlayers: PlayerRun[], signal: AbortSignal) => {
-      if (
-        !currentPlayers.some((player) => player.memory.revealed.length === 2)
-      ) {
-        return;
-      }
-      publish(currentPlayers);
-      await sleep(460, signal);
-
-      currentPlayers.forEach((player) => {
-        const [first, second] = player.memory.revealed;
-        if (first === undefined || second === undefined) return;
-        const matched = player.memory.deck[first] === player.memory.deck[second];
-        const latest = player.history.at(-1);
-        if (matched) {
-          player.memory.matched.push(first, second);
-          if (latest) latest.outcome += " · PAIR MATCHED";
-        } else if (latest) {
-          latest.outcome += " · mismatch, flipped face-down";
-        }
-        player.memory.revealed = [];
-      });
-      publish(currentPlayers);
-      await sleep(120, signal);
-    },
-    [publish],
-  );
-
-  const memoryResult = useCallback(
-    (currentPlayers: PlayerRun[]): MatchResult => {
-      const blocked = blockedResult(currentPlayers);
-      if (blocked) return blocked;
-      const [first, second] = currentPlayers;
-      const firstComplete = isComplete("memory-match", first);
-      const secondComplete = isComplete("memory-match", second);
-      if (firstComplete && secondComplete) {
-        return {
-          winner: "draw",
-          label: "Perfect sync",
-          detail: "Both Jevs cleared the deck on the same click cycle.",
-        };
-      }
-      if (firstComplete || secondComplete) {
-        const winner = firstComplete ? first : second;
-        return {
-          winner: winner.id,
-          label: `${winner.name} clears it`,
-          detail: `Six pairs in ${winner.memory.flips} flips.`,
-        };
-      }
-      const firstPairs = first.memory.matched.length / 2;
-      const secondPairs = second.memory.matched.length / 2;
-      if (firstPairs !== secondPairs) {
-        const winner = firstPairs > secondPairs ? first : second;
-        return {
-          winner: winner.id,
-          label: `${winner.name} on pairs`,
-          detail: `Limit reached at ${firstPairs}–${secondPairs} pairs.`,
-        };
-      }
-      if (first.memory.flips !== second.memory.flips) {
-        const winner =
-          first.memory.flips < second.memory.flips ? first : second;
-        return {
-          winner: winner.id,
-          label: `${winner.name} on efficiency`,
-          detail: `${firstPairs} pairs each; fewer flips wins.`,
-        };
-      }
-      return {
-        winner: "draw",
-        label: "Limit reached",
-        detail: `${firstPairs} pairs and ${first.memory.flips} flips each.`,
-      };
-    },
-    [blockedResult],
-  );
-
-  const runMemory = useCallback(
+  const runRace = useCallback(
     async (
       currentPlayers: PlayerRun[],
+      state: SharedRaceState,
       signal: AbortSignal,
+      matchNumber: number,
       deadline: number,
     ) => {
-      for (let step = 0; step < MEMORY_STEP_LIMIT; step += 1) {
+      for (let round = 0; round < MAX_ROUNDS; round += 1) {
         if (
           signal.aborted ||
           Date.now() >= deadline ||
-          currentPlayers.some((player) => isComplete("memory-match", player)) ||
-          currentPlayers.every((player) => player.status === "blocked")
+          raceHasWinner(state) ||
+          availableCount(state) === 0 ||
+          currentPlayers.some((player) => player.status === "blocked")
         ) {
           break;
         }
-        const decisions = await getDecisions(
-          "memory-match",
+        const completed = await getParallelDecisions(
           currentPlayers,
+          state,
           signal,
         );
-        await executeDecisions(
-          "memory-match",
+        await applySerially(
+          completed,
           currentPlayers,
-          decisions,
+          state,
           signal,
+          matchNumber,
         );
-        await resolveMemoryPairs(currentPlayers, signal);
+        await sleep(150, signal);
       }
-      finishMatch(currentPlayers, memoryResult(currentPlayers));
+      finishMatch(currentPlayers, state, resolveResult(state, currentPlayers));
     },
     [
-      executeDecisions,
+      applySerially,
       finishMatch,
-      getDecisions,
-      memoryResult,
-      resolveMemoryPairs,
+      getParallelDecisions,
+      resolveResult,
     ],
-  );
-
-  const game2048Result = useCallback(
-    (currentPlayers: PlayerRun[]): MatchResult => {
-      const blocked = blockedResult(currentPlayers);
-      if (blocked) return blocked;
-      const [first, second] = currentPlayers;
-      if (first.game2048.score !== second.game2048.score) {
-        const winner =
-          first.game2048.score > second.game2048.score ? first : second;
-        return {
-          winner: winner.id,
-          label: `${winner.name} wins`,
-          detail: `${first.game2048.score}–${second.game2048.score} after 24 moves.`,
-        };
-      }
-      const firstMax = Math.max(...first.game2048.board);
-      const secondMax = Math.max(...second.game2048.board);
-      if (firstMax !== secondMax) {
-        const winner = firstMax > secondMax ? first : second;
-        return {
-          winner: winner.id,
-          label: `${winner.name} wins`,
-          detail: `Scores tied; ${winner.name} built the higher tile.`,
-        };
-      }
-      return {
-        winner: "draw",
-        label: "Even boards",
-        detail: `${first.game2048.score} points and a ${firstMax} high tile each.`,
-      };
-    },
-    [blockedResult],
-  );
-
-  const run2048 = useCallback(
-    async (currentPlayers: PlayerRun[], signal: AbortSignal) => {
-      for (let step = 0; step < GAME_2048_STEPS; step += 1) {
-        if (
-          signal.aborted ||
-          currentPlayers.some(
-            (player) => Math.max(...player.game2048.board) >= 2048,
-          ) ||
-          currentPlayers.every((player) => player.status === "blocked")
-        ) {
-          break;
-        }
-        const decisions = await getDecisions("2048", currentPlayers, signal);
-        await executeDecisions(
-          "2048",
-          currentPlayers,
-          decisions,
-          signal,
-        );
-        await sleep(170, signal);
-      }
-      finishMatch(currentPlayers, game2048Result(currentPlayers));
-    },
-    [executeDecisions, finishMatch, game2048Result, getDecisions],
-  );
-
-  const treasureResult = useCallback(
-    (currentPlayers: PlayerRun[]): MatchResult => {
-      const blocked = blockedResult(currentPlayers);
-      if (blocked) return blocked;
-      const [first, second] = currentPlayers;
-      const firstComplete = isComplete("treasure-hunt", first);
-      const secondComplete = isComplete("treasure-hunt", second);
-      if (firstComplete && secondComplete) {
-        return {
-          winner: "draw",
-          label: "Same spot, same time",
-          detail: "Both Jevs found all three treasures together.",
-        };
-      }
-      if (firstComplete || secondComplete) {
-        const winner = firstComplete ? first : second;
-        return {
-          winner: winner.id,
-          label: `${winner.name} found them`,
-          detail: `All three treasures in ${winner.treasure.clicks} clicks.`,
-        };
-      }
-      if (first.treasure.found !== second.treasure.found) {
-        const winner =
-          first.treasure.found > second.treasure.found ? first : second;
-        return {
-          winner: winner.id,
-          label: `${winner.name} found more`,
-          detail: `${first.treasure.found}–${second.treasure.found} treasures.`,
-        };
-      }
-      return {
-        winner: "draw",
-        label: "Grid exhausted",
-        detail: `${first.treasure.found} treasures each.`,
-      };
-    },
-    [blockedResult],
-  );
-
-  const runTreasure = useCallback(
-    async (currentPlayers: PlayerRun[], signal: AbortSignal) => {
-      for (let step = 0; step < TREASURE_STEP_LIMIT; step += 1) {
-        if (
-          signal.aborted ||
-          currentPlayers.some((player) => isComplete("treasure-hunt", player)) ||
-          currentPlayers.every((player) => player.status === "blocked")
-        ) {
-          break;
-        }
-        const decisions = await getDecisions(
-          "treasure-hunt",
-          currentPlayers,
-          signal,
-        );
-        await executeDecisions(
-          "treasure-hunt",
-          currentPlayers,
-          decisions,
-          signal,
-        );
-        await sleep(190, signal);
-      }
-      finishMatch(currentPlayers, treasureResult(currentPlayers));
-    },
-    [executeDecisions, finishMatch, getDecisions, treasureResult],
   );
 
   const startFight = useCallback(
@@ -626,65 +464,62 @@ export function Arena() {
       controllerRef.current?.abort();
       const controller = new AbortController();
       controllerRef.current = controller;
-      activeGameRef.current = game;
-      setActiveGame(game);
+      matchNumberRef.current += 1;
+      const matchNumber = matchNumberRef.current;
+      const nextPlayers = [createPlayer("jev-a"), createPlayer("jev-b")];
+      const nextRace = createSharedRace(
+        game,
+        `${BASE_SEED}:${matchNumber}`,
+      );
+      playersRef.current = nextPlayers;
+      raceRef.current = nextRace;
+      setSelectedGame(game);
       setView("fight");
       setResult(null);
       setPhase("countdown");
-
-      const nextPlayers = [
-        createPlayer("jev-a", MATCH_SEED),
-        createPlayer("jev-b", MATCH_SEED),
-      ];
-      runPlayersRef.current = nextPlayers;
-      publish(nextPlayers);
+      publish(nextPlayers, nextRace);
 
       try {
         for (let count = 3; count >= 1; count -= 1) {
           setCountdown(count);
-          await sleep(600, controller.signal);
+          await sleep(550, controller.signal);
         }
         setPhase("running");
-        const duration =
-          game === "memory-match"
-            ? MEMORY_TIMEOUT_MS
-            : game === "2048"
-              ? 45_000
-              : 40_000;
+        const duration = 50_000;
         const deadline = Date.now() + duration;
-        setTimeLeft(Math.ceil(duration / 1_000));
+        setTimeLeft(duration / 1_000);
         const clock = window.setInterval(() => {
           setTimeLeft(Math.max(0, Math.ceil((deadline - Date.now()) / 1_000)));
         }, 250);
-
         try {
-          if (game === "memory-match") {
-            await runMemory(nextPlayers, controller.signal, deadline);
-          } else if (game === "2048") {
-            await run2048(nextPlayers, controller.signal);
-          } else {
-            await runTreasure(nextPlayers, controller.signal);
-          }
+          await runRace(
+            nextPlayers,
+            nextRace,
+            controller.signal,
+            matchNumber,
+            deadline,
+          );
         } finally {
           window.clearInterval(clock);
         }
       } catch (error) {
         if (!(error instanceof DOMException && error.name === "AbortError")) {
-          finishMatch(nextPlayers, {
+          finishMatch(nextPlayers, nextRace, {
             winner: "draw",
-            label: "Arena interrupted",
-            detail: "The duel stopped before a valid result was recorded.",
+            label: "Race interrupted",
+            detail: "The shared board stopped before a result.",
           });
         }
       }
     },
-    [finishMatch, publish, run2048, runMemory, runTreasure],
+    [finishMatch, publish, runRace],
   );
 
   const backToLobby = useCallback(() => {
     controllerRef.current?.abort();
     controllerRef.current = null;
-    runPlayersRef.current = null;
+    playersRef.current = null;
+    raceRef.current = null;
     setView("landing");
     setPhase("idle");
     setResult(null);
@@ -696,6 +531,9 @@ export function Arena() {
     },
     [],
   );
+
+  const scoreLabel =
+    selectedGame === "treasure-hunt" ? "TREASURES" : "CLAIMS";
 
   return (
     <main className={view === "fight" ? "site fight-site" : "site"}>
@@ -724,7 +562,7 @@ export function Arena() {
         <section className="simple-landing">
           <h1>Jev fights Jev</h1>
           <div className="game-modal">
-            <span className="modal-kicker">SELECT A GAME</span>
+            <span className="modal-kicker">SELECT A SHARED RACE</span>
             <label className="game-select">
               <span>GAME</span>
               <div>
@@ -760,14 +598,14 @@ export function Arena() {
           </div>
         </section>
       ) : (
-        <section className="fight-view">
+        <section className="fight-view shared-fight-view">
           <div className="arena-titlebar">
             <button className="back-button" onClick={backToLobby} type="button">
               ← Lobby
             </button>
             <div>
-              <span>{GAME_COPY[activeGame].eyebrow}</span>
-              <h1>{GAME_COPY[activeGame].label}</h1>
+              <span>{GAME_COPY[selectedGame].eyebrow}</span>
+              <h1>{GAME_COPY[selectedGame].label}</h1>
             </div>
             <div className="match-clock">
               <span>{phase === "finished" ? "FINAL" : "MATCH CLOCK"}</span>
@@ -788,7 +626,7 @@ export function Arena() {
                 <p>{result.detail}</p>
               </div>
               <button
-                onClick={() => startFight(activeGame)}
+                onClick={() => startFight(selectedGame)}
                 className="rematch-button"
                 type="button"
               >
@@ -797,28 +635,52 @@ export function Arena() {
             </div>
           )}
 
-          <div className="versus-grid">
+          <p className="race-order-line">
+            Parallel decisions · fastest response gets the lock · exact ties
+            alternate priority
+          </p>
+
+          <div className="shared-race-layout">
             <AgentPane
               accent="coral"
-              game={activeGame}
-              onAction={executeFixtureAction}
               player={players[0]}
+              score={race.scores["jev-a"]}
+              scoreLabel={scoreLabel}
             />
-            <div className="versus-badge" aria-hidden="true">
-              <span>VS</span>
+
+            <div className="shared-browser-shell">
+              <div className="browser-chrome">
+                <span className="browser-dots" aria-hidden="true">
+                  <i />
+                  <i />
+                  <i />
+                </span>
+                <div className="browser-address">
+                  arena.local/{selectedGame}?world=shared
+                </div>
+                <span className="browser-live">
+                  <i />
+                  SHARED
+                </span>
+              </div>
+              <SharedGameFixture state={race} onAction={claimCell} />
+              <div className="dom-index-pill">
+                <span>&lt;/&gt;</span> one indexed DOM · first claim wins
+              </div>
             </div>
+
             <AgentPane
               accent="teal"
-              game={activeGame}
-              onAction={executeFixtureAction}
               player={players[1]}
+              score={race.scores["jev-b"]}
+              scoreLabel={scoreLabel}
             />
           </div>
 
           {phase === "countdown" && (
             <div className="countdown-overlay" aria-live="assertive">
               <div>
-                <span>READY</span>
+                <span>SHARED WORLD READY</span>
                 <strong>{countdown}</strong>
               </div>
             </div>

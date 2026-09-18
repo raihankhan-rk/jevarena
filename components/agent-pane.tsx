@@ -1,13 +1,12 @@
 "use client";
 
-import { GameFixture } from "@/components/game-fixtures";
-import type { GameId, PlayerRun } from "@/lib/arena/types";
+import type { PlayerRun } from "@/lib/arena/types";
 
 interface AgentPaneProps {
-  game: GameId;
   player: PlayerRun;
+  score: number;
+  scoreLabel: string;
   accent: "coral" | "teal";
-  onAction: (player: PlayerRun["id"], targetId: string) => void;
 }
 
 function topProbabilities(values: Record<string, number>, limit = 3) {
@@ -24,7 +23,6 @@ function ProbabilityRows({
   values: Record<string, number>;
 }) {
   const rows = topProbabilities(values);
-
   return (
     <div className="probability-group">
       <div className="probability-heading">
@@ -46,33 +44,23 @@ function ProbabilityRows({
           </div>
         ))
       ) : (
-        <div className="probability-empty">Awaiting first decision</div>
+        <div className="probability-empty">Awaiting decision</div>
       )}
     </div>
   );
 }
 
-function StatusDot({ status }: { status: PlayerRun["status"] }) {
-  return (
-    <span className={`agent-status status-${status}`}>
-      <i />
-      {status}
-    </span>
-  );
-}
-
-export function AgentPane({ game, player, accent, onAction }: AgentPaneProps) {
+export function AgentPane({
+  player,
+  score,
+  scoreLabel,
+  accent,
+}: AgentPaneProps) {
   const decision = player.latestDecision;
   const latestTrace = player.history.at(-1);
-  const score =
-    game === "memory-match"
-      ? { label: "PAIRS", value: player.memory.matched.length / 2 }
-      : game === "2048"
-        ? { label: "SCORE", value: player.game2048.score }
-        : { label: "FOUND", value: player.treasure.found };
 
   return (
-    <article className={`agent-pane accent-${accent}`}>
+    <article className={`race-agent agent-pane accent-${accent}`}>
       <header className="agent-pane-header">
         <div className="agent-identity">
           <span className="agent-avatar" aria-hidden="true">
@@ -81,46 +69,28 @@ export function AgentPane({ game, player, accent, onAction }: AgentPaneProps) {
           <div>
             <div className="agent-name-row">
               <h2>{player.name}</h2>
-              <StatusDot status={player.status} />
+              <span className={`agent-status status-${player.status}`}>
+                <i />
+                {player.status}
+              </span>
             </div>
-            <p>jev-latest · isolated state</p>
+            <p>jev-latest</p>
           </div>
         </div>
         <div className="agent-score">
-          <span>{score.label}</span>
-          <strong>{score.value}</strong>
+          <span>{scoreLabel}</span>
+          <strong>{score}</strong>
         </div>
       </header>
 
-      <div className="browser-shell">
-        <div className="browser-chrome">
-          <span className="browser-dots" aria-hidden="true">
-            <i />
-            <i />
-            <i />
-          </span>
-          <div className="browser-address">
-            <svg viewBox="0 0 16 16" aria-hidden="true">
-              <path d="M4.75 7V5.6a3.25 3.25 0 0 1 6.5 0V7M3.5 7h9v6.5h-9z" />
-            </svg>
-            arena.local/{game}
-          </div>
-          <span className="browser-live">
-            <i />
-            LIVE
-          </span>
-        </div>
-        <GameFixture game={game} player={player} onAction={onAction} />
-        <div className="dom-index-pill">
-          <span>&lt;/&gt;</span> indexed DOM · click only
-        </div>
-      </div>
-
-      <section className="decision-console" aria-label={`${player.name} decision telemetry`}>
+      <section
+        className="decision-console"
+        aria-label={`${player.name} decision telemetry`}
+      >
         <div className="step-ticker">
           <div>
             <span>STEP</span>
-            <strong>{String(player.history.length + (decision ? 1 : 0)).padStart(2, "0")}</strong>
+            <strong>{String(player.history.length).padStart(2, "0")}</strong>
           </div>
           <div>
             <span>OPERATION</span>
@@ -130,16 +100,8 @@ export function AgentPane({ game, player, accent, onAction }: AgentPaneProps) {
             <span>TARGET</span>
             <strong>
               {decision?.targetId
-                ? `[${decision.targetId.split("-").at(-1)}] ${decision.targetId
-                    .split("-")[0]
-                    .toUpperCase()}`
+                ? `[${decision.targetId.split("-").at(-1)}] CELL`
                 : "—"}
-            </strong>
-          </div>
-          <div>
-            <span>CONF.</span>
-            <strong>
-              {decision ? `${Math.round(decision.confidence * 100)}%` : "—"}
             </strong>
           </div>
           <div>
@@ -170,8 +132,8 @@ export function AgentPane({ game, player, accent, onAction }: AgentPaneProps) {
           <p>
             {latestTrace?.outcome ??
               (player.status === "thinking"
-                ? "Observing indexed controls…"
-                : "Waiting for the bell.")}
+                ? "Choosing from the shared board…"
+                : "Waiting for the race.")}
           </p>
         </div>
       </section>
