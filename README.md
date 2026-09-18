@@ -80,8 +80,9 @@ There is no identity, tracking cookie, UTM capture, or analytics SDK.
 
 For durable production counts, open the Railway project, select the
 `jevarena` service, add a Volume, and mount it at `/data`. Redeploy once; the
-stats page will then show that durable Volume storage is active. No database
-or paid data service is required.
+container entrypoint assigns the mounted directory to the unprivileged
+`nextjs` runtime user, and the stats page will show that Volume storage is
+active. No database or paid data service is required.
 
 ## Run locally
 

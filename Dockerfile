@@ -15,11 +15,16 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
-RUN addgroup --system --gid 1001 nodejs \
-  && adduser --system --uid 1001 nextjs
+RUN apk add --no-cache su-exec \
+  && addgroup --system --gid 1001 nodejs \
+  && adduser --system --uid 1001 nextjs \
+  && mkdir -p /data \
+  && chown nextjs:nodejs /data
 COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
-USER nextjs
+COPY docker-entrypoint.sh /usr/local/bin/jevarena-entrypoint
+RUN chmod +x /usr/local/bin/jevarena-entrypoint
 EXPOSE 3000
+ENTRYPOINT ["/usr/local/bin/jevarena-entrypoint"]
 CMD ["node", "server.js"]
